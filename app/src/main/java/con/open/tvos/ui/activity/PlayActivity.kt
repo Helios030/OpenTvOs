@@ -974,3 +974,699 @@ class PlayActivity : BaseActivity() {
     }
 
     var parseThreadPool: ExecutorService? = null
+
+    private fun doParse(pb: ParseBean) {
+        stopParse()
+        initParseLoadFound()
+        when (pb.type) {
+            4 -> parseMix(pb, true)
+            0 -> {
+                setTip("正在嗅探播放地址", true, false)
+                mHandler.removeMessages(100)
+                mHandler.sendEmptyMessageDelayed(100, 20 * 1000)
+                if (pb.ext != null) {
+                    try {
+                        val reqHeaders = HashMap<String, String>()
+                        val jsonObject = JSONObject(pb.ext)
+                        if (jsonObject.has("header")) {
+                            val headerJson = jsonObject.optJSONObject("header")
+                            val keys = headerJson.keys()
+                            while (keys.hasNext()) {
+                                val key = keys.next()
+                                if (key.equals("user-agent", ignoreCase = true)) {
+                                    webUserAgent = headerJson.getString(key).trim()
+                                } else {
+                                    reqHeaders[key] = headerJson.optString(key, "")
+                                }
+                            }
+                            if (reqHeaders.size > 0) webHeaderMap = reqHeaders
+                        }
+                    } catch (e: Throwable) {
+                        e.printStackTrace()
+                    }
+                }
+                loadWebView(pb.url + webUrl)
+            }
+            1 -> {
+                setTip("正在解析播放地址", true, false)
+                val reqHeaders = HttpHeaders()
+                try {
+                    val jsonObject = JSONObject(pb.ext)
+                    if (jsonObject.has("header")) {
+                        val headerJson = jsonObject.optJSONObject("header")
+                        val keys = headerJson.keys()
+                        while (keys.hasNext()) {
+                            val key = keys.next()
+                            reqHeaders.put(key, headerJson.optString(key, ""))
+                        }
+                    }
+                } catch (e: Throwable) {
+                    e.printStackTrace()
+                }
+                OkGo.get<String>(pb.url + mController.encodeUrl(webUrl))
+                    .tag("json_jx")
+                    .headers(reqHeaders)
+                    .execute(object : AbsCallback<String>() {
+                        override fun convertResponse(response: okhttp3.Response): String? {
+                            return if (response.body != null) {
+                                response.body!!.string()
+                            } else {
+                                throw IllegalStateException("网络请求错误")
+                            }
+                        }
+
+                        override fun onSuccess(response: Response<String>) {
+                            val json = response.body()
+                            try {
+                                val rs = jsonParse(webUrl, json!!)
+                                var headers: HashMap<String, String>? = null
+                                if (rs!!.has("header")) {
+                                    try {
+                                        val hds = rs.getJSONObject("header")
+                                        val keys = hds.keys()
+                                        while (keys.hasNext()) {
+                                            val key = keys.next()
+                                            if (headers == null) {
+                                                headers = HashMap()
+                                            }
+                                            headers[key] = hds.getString(key)
+                                        }
+                                    } catch (th: Throwable) {
+                                    }
+                                }
+                                playUrl(rs.getString("url"), headers)
+                            } catch (e: Throwable) {
+                                e.printStackTrace()
+                                errorWithRetry("解析错误", false)
+                            }
+                        }
+
+                        override fun onError(response: Response<String>) {
+                            super.onError(response)
+                            errorWithRetry("解析错误", false)
+                        }
+                    })
+            }
+            2 -> {
+                setTip("正在解析播放地址", true, false)
+                parseThreadPool = Executors.newSingleThreadExecutor()
+                val jxs = LinkedHashMap<String, String>()
+                for (p in ApiConfig.get().parseBeanList) {
+                    if (p.type == 1) {
+                        jxs[p.name] = p.mixUrl()
+                    }
+                }
+                parseThreadPool!!.execute {
+                    val rs = ApiConfig.get().jsonExt(pb.url, jxs, webUrl)
+                    if (rs == null || !rs.has("url") || rs.optString("url").isEmpty()) {
+                        setTip("解析错误", false, true)
+                    } else {
+                        var headers: HashMap<String, String>? = null
+                        if (rs.has("header")) {
+                            try {
+                                val hds = rs.getJSONObject("header")
+                                val keys = hds.keys()
+                                while (keys.hasNext()) {
+                                    val key = keys.next()
+                                    if (headers == null) {
+                                        headers = HashMap()
+                                    }
+                                    headers[key] = hds.getString(key)
+                                }
+                            } catch (th: Throwable) {
+                            }
+                        }
+                        if (rs.has("jxFrom")) {
+                            runOnUiThread {
+                                Toast.makeText(mContext, "解析来自:" + rs.optString("jxFrom"), Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        val parseWV = rs.optInt("parse", 0) == 1
+                        if (parseWV) {
+                            val wvUrl = DefaultConfig.checkReplaceProxy(rs.optString("url", ""))
+                            loadUrl(wvUrl)
+                        } else {
+                            playUrl(rs.optString("url", ""), headers)
+                        }
+                    }
+                }
+            }
+            3 -> parseMix(pb, false)
+        }
+    }
+
+    private fun parseMix(pb: ParseBean, isSuper: Boolean) {
+        setTip("正在解析播放地址", true, false)
+        parseThreadPool = Executors.newSingleThreadExecutor()
+        val jxs = LinkedHashMap<String, HashMap<String, String>>()
+        var extendName = ""
+        for (p in ApiConfig.get().parseBeanList) {
+            val data = HashMap<String, String>()
+            data["url"] = p.url
+            if (p.url == pb.url) {
+                extendName = p.name
+            }
+            data["type"] = p.type.toString()
+            data["ext"] = p.ext ?: ""
+            jxs[p.name] = data
+        }
+        val finalExtendName = extendName
+        parseThreadPool!!.execute {
+            if (isSuper) {
+                val rs = SuperParse.parse(jxs, parseFlag + "123", webUrl)
+                if (!rs.has("url") || rs.optString("url").isEmpty()) {
+                    setTip("解析错误", false, true)
+                } else {
+                    if (rs.has("parse") && rs.optInt("parse", 0) == 1) {
+                        if (rs.has("ua")) {
+                            webUserAgent = rs.optString("ua").trim()
+                        }
+                        setTip("超级解析中", true, false)
+                        runOnUiThread {
+                            val mixParseUrl = DefaultConfig.checkReplaceProxy(rs.optString("url", ""))
+                            stopParse()
+                            mHandler.removeMessages(100)
+                            mHandler.sendEmptyMessageDelayed(100, 20 * 1000)
+                            loadWebView(mixParseUrl)
+                        }
+                        parseThreadPool!!.execute {
+                            val res = SuperParse.doJsonJx(webUrl)
+                            rsJsonJx(res, true)
+                        }
+                    } else {
+                        rsJsonJx(rs, false)
+                    }
+                }
+            } else {
+                val rs = ApiConfig.get().jsonExtMix(parseFlag + "111", pb.url, finalExtendName, jxs, webUrl)
+                if (rs == null || !rs.has("url") || rs.optString("url").isEmpty()) {
+                    setTip("解析错误", false, true)
+                } else {
+                    if (rs.has("parse") && rs.optInt("parse", 0) == 1) {
+                        if (rs.has("ua")) {
+                            webUserAgent = rs.optString("ua").trim()
+                        }
+                        runOnUiThread {
+                            val mixParseUrl = DefaultConfig.checkReplaceProxy(rs.optString("url", ""))
+                            stopParse()
+                            setTip("正在嗅探播放地址", true, false)
+                            mHandler.removeMessages(100)
+                            mHandler.sendEmptyMessageDelayed(100, 20 * 1000)
+                            loadWebView(mixParseUrl)
+                        }
+                    } else {
+                        rsJsonJx(rs, false)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun rsJsonJx(rs: JSONObject, isSuper: Boolean) {
+        if (isSuper) {
+            if (!rs.has("url")) return
+            stopLoadWebView(false)
+        }
+        var headers: HashMap<String, String>? = null
+        if (rs.has("header")) {
+            try {
+                val hds = rs.getJSONObject("header")
+                val keys = hds.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    if (headers == null) {
+                        headers = HashMap()
+                    }
+                    headers[key] = hds.getString(key)
+                }
+            } catch (th: Throwable) {
+            }
+        }
+        if (rs.has("jxFrom")) {
+            runOnUiThread {
+                Toast.makeText(mContext, "解析来自:" + rs.optString("jxFrom"), Toast.LENGTH_SHORT).show()
+            }
+        }
+        playUrl(rs.optString("url", ""), headers)
+    }
+
+    private var mXwalkWebView: XWalkView? = null
+    private var mX5WebClient: XWalkWebClient? = null
+    private var mSysWebView: WebView? = null
+    private var mSysWebClient: SysWebClient? = null
+    private var loadedUrls = HashMap<String, Boolean>()
+    private var loadFoundVideoUrls = LinkedList<String>()
+    private var loadFoundVideoUrlsHeader = HashMap<String, HashMap<String, String>>()
+    private var loadFoundCount = AtomicInteger(0)
+
+    fun loadWebView(url: String) {
+        if (mSysWebView == null && mXwalkWebView == null) {
+            val useSystemWebView = Hawk.get(HawkConfig.PARSE_WEBVIEW, true)
+            if (!useSystemWebView) {
+                XWalkUtils.tryUseXWalk(mContext, object : XWalkUtils.XWalkState {
+                    override fun success() {
+                        initWebView(!sourceBean.clickSelector.isEmpty())
+                        loadUrl(url)
+                    }
+
+                    override fun fail() {
+                        Toast.makeText(mContext, "XWalkView不兼容，已替换为系统自带WebView", Toast.LENGTH_SHORT).show()
+                        initWebView(true)
+                        loadUrl(url)
+                    }
+
+                    override fun ignore() {
+                        Toast.makeText(mContext, "XWalkView运行组件未下载，已替换为系统自带WebView", Toast.LENGTH_SHORT).show()
+                        initWebView(true)
+                        loadUrl(url)
+                    }
+                })
+            } else {
+                initWebView(true)
+                loadUrl(url)
+            }
+        } else {
+            loadUrl(url)
+        }
+    }
+
+    fun initWebView(useSystemWebView: Boolean) {
+        if (useSystemWebView) {
+            mSysWebView = MyWebView(mContext)
+            configWebViewSys(mSysWebView!!)
+        } else {
+            mXwalkWebView = MyXWalkView(mContext)
+            configWebViewX5(mXwalkWebView!!)
+        }
+    }
+
+    fun loadUrl(url: String) {
+        runOnUiThread {
+            if (mXwalkWebView != null) {
+                mXwalkWebView!!.stopLoading()
+                if (webUserAgent != null) {
+                    mXwalkWebView!!.settings.userAgentString = webUserAgent
+                }
+                if (webHeaderMap != null) {
+                    mXwalkWebView!!.loadUrl(url, webHeaderMap)
+                } else {
+                    mXwalkWebView!!.loadUrl(url)
+                }
+            }
+            if (mSysWebView != null) {
+                mSysWebView!!.stopLoading()
+                if (webUserAgent != null) {
+                    mSysWebView!!.settings.userAgentString = webUserAgent
+                }
+                if (webHeaderMap != null) {
+                    mSysWebView!!.loadUrl(url, webHeaderMap)
+                } else {
+                    mSysWebView!!.loadUrl(url)
+                }
+            }
+        }
+    }
+
+    fun stopLoadWebView(destroy: Boolean) {
+        runOnUiThread {
+            if (mXwalkWebView != null) {
+                mXwalkWebView!!.stopLoading()
+                mXwalkWebView!!.loadUrl("about:blank")
+                if (destroy) {
+                    mXwalkWebView!!.clearCache(true)
+                    mXwalkWebView!!.removeAllViews()
+                    mXwalkWebView!!.onDestroy()
+                    mXwalkWebView = null
+                }
+            }
+            if (mSysWebView != null) {
+                mSysWebView!!.stopLoading()
+                mSysWebView!!.loadUrl("about:blank")
+                if (destroy) {
+                    mSysWebView!!.clearCache(true)
+                    mSysWebView!!.removeAllViews()
+                    mSysWebView!!.destroy()
+                    mSysWebView = null
+                }
+            }
+        }
+    }
+
+    fun checkVideoFormat(url: String): Boolean {
+        if (url.contains("url=http") || url.contains(".html")) {
+            return false
+        }
+        if (sourceBean.type == 3) {
+            val sp = ApiConfig.get().getCSP(sourceBean)
+            if (sp != null && sp.manualVideoCheck())
+                return sp.isVideoFormat(url)
+        }
+        return VideoParseRuler.checkIsVideoForParse(webUrl, url)
+    }
+
+    internal inner class MyWebView(context: Context) : WebView(context) {
+        override fun setOverScrollMode(mode: Int) {
+            super.setOverScrollMode(mode)
+            if (mContext is Activity)
+                AutoSize.autoConvertDensityOfCustomAdapt(mContext as Activity, this@PlayActivity)
+        }
+
+        override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+            return false
+        }
+    }
+
+    internal inner class MyXWalkView(context: Context) : XWalkView(context) {
+        override fun setOverScrollMode(mode: Int) {
+            super.setOverScrollMode(mode)
+            if (mContext is Activity)
+                AutoSize.autoConvertDensityOfCustomAdapt(mContext as Activity, this@PlayActivity)
+        }
+
+        override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+            return false
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun configWebViewSys(webView: WebView) {
+        if (webView == null) {
+            return
+        }
+        val layoutParams: ViewGroup.LayoutParams = if (Hawk.get(HawkConfig.DEBUG_OPEN, false)) {
+            ViewGroup.LayoutParams(800, 400)
+        } else {
+            ViewGroup.LayoutParams(1, 1)
+        }
+        webView.isFocusable = false
+        webView.isFocusableInTouchMode = false
+        webView.clearFocus()
+        webView.overScrollMode = View.OVER_SCROLL_ALWAYS
+        addContentView(webView, layoutParams)
+        val settings = webView.settings
+        settings.setNeedInitialFocus(false)
+        settings.allowContentAccess = true
+        settings.allowFileAccess = true
+        settings.allowUniversalAccessFromFileURLs = true
+        settings.allowFileAccessFromFileURLs = true
+        settings.setDatabaseEnabled(true)
+        settings.domStorageEnabled = true
+        settings.javaScriptEnabled = true
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            settings.mediaPlaybackRequiresUserGesture = false
+        }
+        if (Hawk.get(HawkConfig.DEBUG_OPEN, false)) {
+            settings.blockNetworkImage = false
+        } else {
+            settings.blockNetworkImage = true
+        }
+        settings.useWideViewPort = true
+        settings.domStorageEnabled = true
+        settings.javaScriptCanOpenWindowsAutomatically = true
+        settings.setSupportMultipleWindows(false)
+        settings.loadWithOverviewMode = true
+        settings.setBuiltInZoomControls(true)
+        settings.setSupportZoom(false)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        }
+        settings.cacheMode = WebSettings.LOAD_DEFAULT
+        settings.defaultTextEncodingName = "utf-8"
+        settings.userAgentString = webView.settings.userAgentString
+
+        webView.setWebChromeClient(object : WebChromeClient() {
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage): Boolean {
+                return false
+            }
+
+            override fun onJsAlert(view: WebView, url: String, message: String, result: JsResult): Boolean {
+                return true
+            }
+
+            override fun onJsConfirm(view: WebView, url: String, message: String, result: JsResult): Boolean {
+                return true
+            }
+
+            override fun onJsPrompt(view: WebView, url: String, message: String, defaultValue: String, result: JsPromptResult): Boolean {
+                return true
+            }
+        })
+        mSysWebClient = SysWebClient()
+        webView.webViewClient = mSysWebClient
+        webView.setBackgroundColor(Color.BLACK)
+    }
+
+    internal inner class SysWebClient : WebViewClient() {
+        override fun onReceivedSslError(webView: WebView, sslErrorHandler: SslErrorHandler, sslError: SslError) {
+            sslErrorHandler.proceed()
+        }
+
+        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+            return false
+        }
+
+        override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
+            return false
+        }
+
+        override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
+            super.onPageStarted(view, url, favicon)
+        }
+
+        override fun onPageFinished(view: WebView, url: String) {
+            super.onPageFinished(view, url)
+            LOG.i("echo-onPageFinished url:$url")
+            if (url != "about:blank") {
+                mController.evaluateScript(sourceBean, url, view, null)
+            }
+        }
+
+        fun checkIsVideo(url: String, headers: HashMap<String, String>): WebResourceResponse? {
+            if (url.endsWith("/favicon.ico")) {
+                if (url.startsWith("http://127.0.0.1")) {
+                    return WebResourceResponse("image/x-icon", "UTF-8", null)
+                }
+                return null
+            }
+
+            val isFilter = VideoParseRuler.isFilter(webUrl, url)
+            if (isFilter) {
+                LOG.i("shouldInterceptLoadRequest filter:$url")
+                return null
+            }
+
+            var ad: Boolean
+            if (!loadedUrls.containsKey(url)) {
+                ad = AdBlocker.isAd(url)
+                loadedUrls[url] = ad
+            } else {
+                ad = loadedUrls[url]!!
+            }
+
+            if (!ad) {
+                if (checkVideoFormat(url)) {
+                    loadFoundVideoUrls.add(url)
+                    loadFoundVideoUrlsHeader[url] = headers
+                    LOG.i("echo-loadFoundVideoUrl:$url")
+                    if (loadFoundCount.incrementAndGet() == 1) {
+                        stopLoadWebView(false)
+                        SuperParse.stopJsonJx()
+                        var videoUrl = loadFoundVideoUrls.poll()!!
+                        mHandler.removeMessages(100)
+                        val cookie = CookieManager.getInstance().getCookie(videoUrl)
+                        if (!TextUtils.isEmpty(cookie)) headers["Cookie"] = " $cookie"
+                        playUrl(videoUrl, headers)
+                    }
+                }
+            }
+
+            return if (ad || loadFoundCount.get() > 0) {
+                AdBlocker.createEmptyResource()
+            } else {
+                null
+            }
+        }
+
+        @Nullable
+        override fun shouldInterceptRequest(view: WebView, url: String): WebResourceResponse? {
+            return null
+        }
+
+        @Nullable
+        @TargetApi(Build.VERSION_CODES.LOLLIPOP)
+        override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+            val url = request.url.toString()
+            LOG.i("echo-shouldInterceptRequest url:$url")
+            val webHeaders = HashMap<String, String>()
+            val hds = request.requestHeaders
+            if (hds != null && hds.keys.size > 0) {
+                for (k in hds.keys) {
+                    if (k.equals("user-agent", ignoreCase = true)
+                        || k.equals("referer", ignoreCase = true)
+                        || k.equals("origin", ignoreCase = true)
+                    ) {
+                        webHeaders[k] = " " + hds[k]
+                    }
+                }
+            }
+            return checkIsVideo(url, webHeaders)
+        }
+
+        override fun onLoadResource(webView: WebView, url: String) {
+            super.onLoadResource(webView, url)
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun configWebViewX5(webView: XWalkView) {
+        if (webView == null) {
+            return
+        }
+        val layoutParams: ViewGroup.LayoutParams = if (Hawk.get(HawkConfig.DEBUG_OPEN, false)) {
+            ViewGroup.LayoutParams(800, 400)
+        } else {
+            ViewGroup.LayoutParams(1, 1)
+        }
+        webView.isFocusable = false
+        webView.isFocusableInTouchMode = false
+        webView.clearFocus()
+        webView.overScrollMode = View.OVER_SCROLL_ALWAYS
+        addContentView(webView, layoutParams)
+        val settings = webView.settings
+        settings.allowContentAccess = true
+        settings.allowFileAccess = true
+        settings.allowUniversalAccessFromFileURLs = true
+        settings.allowFileAccessFromFileURLs = true
+        settings.setDatabaseEnabled(true)
+        settings.domStorageEnabled = true
+        settings.javaScriptEnabled = true
+
+        if (Hawk.get(HawkConfig.DEBUG_OPEN, false)) {
+            settings.blockNetworkImage = false
+        } else {
+            settings.blockNetworkImage = true
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            settings.mediaPlaybackRequiresUserGesture = false
+        }
+        settings.useWideViewPort = true
+        settings.domStorageEnabled = true
+        settings.javaScriptCanOpenWindowsAutomatically = true
+        settings.setSupportMultipleWindows(false)
+        settings.loadWithOverviewMode = true
+        settings.setBuiltInZoomControls(true)
+        settings.setSupportZoom(false)
+        settings.cacheMode = WebSettings.LOAD_DEFAULT
+
+        webView.setBackgroundColor(Color.BLACK)
+        webView.setUIClient(object : XWalkUIClient(webView) {
+            override fun onConsoleMessage(view: XWalkView, message: String, lineNumber: Int, sourceId: String, messageType: ConsoleMessageType): Boolean {
+                return false
+            }
+
+            override fun onJsAlert(view: XWalkView, url: String, message: String, result: XWalkJavascriptResult): Boolean {
+                return true
+            }
+
+            override fun onJsConfirm(view: XWalkView, url: String, message: String, result: XWalkJavascriptResult): Boolean {
+                return true
+            }
+
+            override fun onJsPrompt(view: XWalkView, url: String, message: String, defaultValue: String, result: XWalkJavascriptResult): Boolean {
+                return true
+            }
+        })
+        mX5WebClient = XWalkWebClient(webView)
+        webView.setResourceClient(mX5WebClient)
+    }
+
+    internal inner class XWalkWebClient(private val view: XWalkView) : XWalkResourceClient(view) {
+        override fun onDocumentLoadedInFrame(view: XWalkView, frameId: Long) {
+            super.onDocumentLoadedInFrame(view, frameId)
+        }
+
+        override fun onLoadStarted(view: XWalkView, url: String) {
+            super.onLoadStarted(view, url)
+        }
+
+        override fun onLoadFinished(view: XWalkView, url: String) {
+            super.onLoadFinished(view, url)
+            LOG.i("echo-onPageFinished url:$url")
+            if (url != "about:blank") {
+                mController.evaluateScript(sourceBean, url, null, view)
+            }
+        }
+
+        override fun onProgressChanged(view: XWalkView, progressInPercent: Int) {
+            super.onProgressChanged(view, progressInPercent)
+        }
+
+        override fun shouldInterceptLoadRequest(view: XWalkView, request: XWalkWebResourceRequest): XWalkWebResourceResponse? {
+            val url = request.url.toString()
+            LOG.i("echo-shouldInterceptLoadRequest url:$url")
+            if (url.endsWith("/favicon.ico")) {
+                if (url.startsWith("http://127.0.0.1")) {
+                    return createXWalkWebResourceResponse("image/x-icon", "UTF-8", null)
+                }
+                return null
+            }
+
+            val isFilter = VideoParseRuler.isFilter(webUrl, url)
+            if (isFilter) {
+                LOG.i("shouldInterceptLoadRequest filter:$url")
+                return null
+            }
+
+            var ad: Boolean
+            if (!loadedUrls.containsKey(url)) {
+                ad = AdBlocker.isAd(url)
+                loadedUrls[url] = ad
+            } else {
+                ad = loadedUrls[url]!!
+            }
+            if (!ad) {
+                if (checkVideoFormat(url)) {
+                    val webHeaders = HashMap<String, String>()
+                    val hds = request.requestHeaders
+                    if (hds != null && hds.keys.size > 0) {
+                        for (k in hds.keys) {
+                            if (k.equals("user-agent", ignoreCase = true)
+                                || k.equals("referer", ignoreCase = true)
+                                || k.equals("origin", ignoreCase = true)
+                            ) {
+                                webHeaders[k] = " " + hds[k]
+                            }
+                        }
+                    }
+                    loadFoundVideoUrls.add(url)
+                    loadFoundVideoUrlsHeader[url] = webHeaders
+                    LOG.i("echo-loadFoundVideoUrl:$url")
+                    if (loadFoundCount.incrementAndGet() == 1) {
+                        SuperParse.stopJsonJx()
+                        stopLoadWebView(false)
+                        mHandler.removeMessages(100)
+                        var videoUrl = loadFoundVideoUrls.poll()!!
+                        val cookie = CookieManager.getInstance().getCookie(videoUrl)
+                        if (!TextUtils.isEmpty(cookie)) webHeaders["Cookie"] = " $cookie"
+                        playUrl(videoUrl, webHeaders)
+                    }
+                }
+            }
+            return if (ad || loadFoundCount.get() > 0) {
+                createXWalkWebResourceResponse("text/plain", "utf-8", ByteArrayInputStream("".toByteArray()))
+            } else {
+                null
+            }
+        }
+
+        override fun shouldOverrideUrlLoading(view: XWalkView, s: String): Boolean {
+            return false
+        }
+
+        override fun onReceivedSslError(view: XWalkView, callback: ValueCallback<Boolean>, error: SslError) {
+            callback.onReceiveValue(true)
+        }
+    }
+}
