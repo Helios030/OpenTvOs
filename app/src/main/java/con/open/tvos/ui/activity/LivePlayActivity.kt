@@ -345,3 +345,936 @@ class LivePlayActivity : BaseActivity() {
         initLiveSettingGroupList()
         Hawk.put(HawkConfig.PLAYER_IS_LIVE, true)
     }
+
+    private var epgdata: MutableList<Epginfo> = ArrayList()
+
+    private fun showEpg(date: Date, arrayList: ArrayList<Epginfo>?) {
+        if (arrayList != null && arrayList.isNotEmpty()) {
+            epgdata = arrayList
+            epgListAdapter?.CanBack(currentLiveChannelItem?.getinclude_back() ?: false)
+            epgListAdapter?.setNewData(epgdata)
+
+            var i = -1
+            var size = epgdata.size - 1
+            while (size >= 0) {
+                if (Date().compareTo(epgdata[size].startdateTime) >= 0) {
+                    break
+                }
+                size--
+            }
+            i = size
+            if (i >= 0 && Date().compareTo(epgdata[i].enddateTime) <= 0) {
+                mRightEpgList?.setSelectedPosition(i)
+                mRightEpgList?.setSelection(i)
+                epgListAdapter?.setSelectedEpgIndex(i)
+                val finalI = i
+                mRightEpgList?.post {
+                    mRightEpgList?.smoothScrollToPosition(finalI)
+                }
+            }
+        }
+    }
+
+    private fun getFirstPartBeforeSpace(str: String?): String {
+        if (str.isNullOrEmpty()) return str ?: ""
+        val spaceIndex = str.indexOf(' ')
+        return if (spaceIndex == -1) str else str.substring(0, spaceIndex)
+    }
+
+    @SuppressLint("SimpleDateFormat")
+    fun getEpg(date: Date) {
+        val channelName = channel_Name?.getChannelName() ?: return
+        val channelNameReal = getFirstPartBeforeSpace(channelName)
+        val timeFormat = SimpleDateFormat("yyyy-MM-dd")
+        timeFormat.timeZone = TimeZone.getTimeZone("GMT+8:00")
+        var epgTagName = channelNameReal
+        if (logoUrl.isNullOrEmpty()) {
+            val epgInfo = EpgUtil.getEpgInfo(channelNameReal)
+            if (epgInfo != null && epgInfo[1].isNotEmpty()) {
+                epgTagName = epgInfo[1]
+            }
+            updateChannelIcon(channelName, epgInfo?.get(0))
+        } else if (logoUrl == "false") {
+            updateChannelIcon(channelName, null)
+        } else {
+            val logo = logoUrl!!.replace("{name}", epgTagName)
+            updateChannelIcon(channelName, logo)
+        }
+        epgListAdapter?.CanBack(currentLiveChannelItem?.getinclude_back() ?: false)
+        val url = if (epgStringAddress.contains("{name}") && epgStringAddress.contains("{date}")) {
+            epgStringAddress.replace("{name}", URLEncoder.encode(epgTagName)).replace("{date}", timeFormat.format(date))
+        } else {
+            "$epgStringAddress?ch=${URLEncoder.encode(epgTagName)}&date=${timeFormat.format(date)}"
+        }
+
+        val savedEpgKey = channelName + "_" + liveEpgDateAdapter?.getItem(liveEpgDateAdapter!!.getSelectedIndex())?.getDatePresented()
+        if (hsEpg.containsKey(savedEpgKey)) {
+            showEpg(date, hsEpg[savedEpgKey])
+            showBottomEpg()
+            return
+        }
+
+        UrlHttpUtil.get(url, object : CallBackUtil.CallBackString() {
+            override fun onFailure(i: Int, str: String?) {}
+
+            override fun onResponse(paramString: String?) {
+                LOG.i("echo-epgTagName:$channelNameReal")
+                val arrayList = ArrayList<Epginfo>()
+                try {
+                    if (paramString != null && paramString.contains("epg_data")) {
+                        val jSONArray = JSONObject(paramString).optJSONArray("epg_data")
+                        if (jSONArray != null) {
+                            for (b in 0 until jSONArray.length()) {
+                                val jSONObject = jSONArray.getJSONObject(b)
+                                val epgbcinfo = Epginfo(date, jSONObject.optString("title"), date, jSONObject.optString("start"), jSONObject.optString("end"), b)
+                                arrayList.add(epgbcinfo)
+                            }
+                        }
+                    }
+                } catch (e: JSONException) {
+                    e.printStackTrace()
+                }
+                hsEpg[savedEpgKey] = arrayList
+                showEpg(date, arrayList)
+                showBottomEpg()
+            }
+        })
+    }
+
+    @SuppressLint("SetTextI18n")
+    private fun showBottomEpg() {
+        if (isSHIYI) return
+
+        if (channel_Name?.getChannelName() != null) {
+            tip_chname?.text = channel_Name!!.getChannelName()
+            tv_channelnum?.text = "" + channel_Name!!.getChannelNum()
+            val tv_current_program_name = findViewById<TextView>(R.id.tv_current_program_name)
+            val tv_next_program_name = findViewById<TextView>(R.id.tv_next_program_name)
+            tip_epg1?.text = "暂无信息"
+            tv_current_program_name?.text = ""
+            tip_epg2?.text = "开源测试软件"
+            tv_next_program_name?.text = ""
+
+            val savedEpgKey = channel_Name!!.getChannelName() + "_" + liveEpgDateAdapter?.getItem(liveEpgDateAdapter!!.getSelectedIndex())?.getDatePresented()
+
+            if (hsEpg.containsKey(savedEpgKey)) {
+                val arrayList = hsEpg[savedEpgKey]
+                if (arrayList != null && arrayList.isNotEmpty()) {
+                    val date = Date()
+                    var size = arrayList.size - 1
+                    var hasInfo = false
+                    while (size >= 0) {
+                        if (date.after(arrayList[size].startdateTime) && date.before(arrayList[size].enddateTime)) {
+                            tip_epg1?.text = "${arrayList[size].start}-${arrayList[size].end}"
+                            tv_current_program_name?.text = arrayList[size].title
+                            if (size != arrayList.size - 1) {
+                                tip_epg2?.text = "${arrayList[size + 1].start}-${arrayList[size + 1].end}"
+                                tv_next_program_name?.text = arrayList[size + 1].title
+                            } else {
+                                tip_epg2?.text = "${arrayList[size].end}-23:59"
+                                tv_next_program_name?.text = "精彩节目-暂无节目预告信息"
+                            }
+                            hasInfo = true
+                            break
+                        } else {
+                            size--
+                        }
+                    }
+                    if (!hasInfo) {
+                        tip_epg1?.text = "00:00-${arrayList[0].start}"
+                        tv_current_program_name?.text = "精彩节目-暂无节目预告信息"
+                        tip_epg2?.text = "${arrayList[0].start}-${arrayList[0].end}"
+                        tv_next_program_name?.text = arrayList[0].title
+                    }
+                }
+                epgListAdapter?.CanBack(currentLiveChannelItem?.getinclude_back() ?: false)
+                epgListAdapter?.setNewData(arrayList)
+            } else {
+                val selectedIndex = liveEpgDateAdapter?.getSelectedIndex() ?: -1
+                if (selectedIndex < 0) getEpg(Date())
+            }
+
+            countDownTimer?.cancel()
+            if (tip_epg1?.text?.toString() != "暂无信息") {
+                ll_right_top_loading?.visibility = View.VISIBLE
+                ll_epg?.visibility = View.VISIBLE
+                countDownTimer = object : CountDownTimer(postTimeout.toLong(), 1000) {
+                    override fun onTick(j: Long) {}
+                    override fun onFinish() {
+                        ll_right_top_loading?.visibility = View.GONE
+                        ll_right_top_huikan?.visibility = View.GONE
+                        ll_epg?.visibility = View.GONE
+                    }
+                }
+                countDownTimer?.start()
+            } else {
+                ll_right_top_loading?.visibility = View.GONE
+                ll_right_top_huikan?.visibility = View.GONE
+                ll_epg?.visibility = View.GONE
+            }
+
+            if (channel_Name == null || channel_Name!!.getSourceNum() <= 0) {
+                findViewById<TextView>(R.id.tv_source).text = "1/1"
+            } else {
+                findViewById<TextView>(R.id.tv_source).text = "[线路${channel_Name!!.getSourceIndex() + 1}/${channel_Name!!.getSourceNum()}]"
+            }
+            tv_right_top_channel_name?.text = channel_Name!!.getChannelName()
+            tv_right_top_epg_name?.text = channel_Name!!.getChannelName()
+        }
+    }
+
+    @SuppressLint("SetTextI18n")
+    private fun updateChannelIcon(channelName: String, logoUrl: String?) {
+        if (StringUtils.isEmpty(logoUrl)) {
+            liveIconNullBg?.visibility = View.VISIBLE
+            liveIconNullText?.visibility = View.VISIBLE
+            imgLiveIcon?.visibility = View.INVISIBLE
+            liveIconNullText?.text = "" + channel_Name!!.getChannelNum()
+        } else {
+            imgLiveIcon?.visibility = View.VISIBLE
+            Picasso.get().load(logoUrl).into(imgLiveIcon)
+            liveIconNullBg?.visibility = View.INVISIBLE
+            liveIconNullText?.visibility = View.INVISIBLE
+        }
+    }
+
+    @SuppressLint("NotifyDataSetChanged")
+    fun divLoadEpgRight(view: View) {
+        mHandler.removeCallbacks(mHideChannelListRun)
+        mHandler.postDelayed(mHideChannelListRun, postTimeout.toLong())
+        mChannelGroupView?.visibility = View.GONE
+        divEpg?.visibility = View.VISIBLE
+        divLoadEpgleft?.visibility = View.VISIBLE
+        divLoadEpg?.visibility = View.GONE
+        mRightEpgList?.setSelectedPosition(epgListAdapter?.getSelectedIndex() ?: 0)
+        epgListAdapter?.notifyDataSetChanged()
+    }
+
+    fun divLoadEpgLeft(view: View) {
+        mHandler.removeCallbacks(mHideChannelListRun)
+        mHandler.postDelayed(mHideChannelListRun, postTimeout.toLong())
+        mChannelGroupView?.visibility = View.VISIBLE
+        divEpg?.visibility = View.GONE
+        divLoadEpgleft?.visibility = View.GONE
+        divLoadEpg?.visibility = View.VISIBLE
+    }
+
+    override fun onBackPressed() {
+        when {
+            tvLeftChannelListLayout?.visibility == View.VISIBLE -> {
+                mHandler.removeCallbacks(mHideChannelListRun)
+                mHandler.post(mHideChannelListRun)
+            }
+            tvRightSettingLayout?.visibility == View.VISIBLE -> {
+                mHandler.removeCallbacks(mHideSettingLayoutRun)
+                mHandler.post(mHideSettingLayoutRun)
+            }
+            backcontroller?.visibility == View.VISIBLE -> {
+                backcontroller?.visibility = View.GONE
+            }
+            isBack -> {
+                isBack = false
+                playPreSource()
+            }
+            else -> {
+                mHandler.removeCallbacks(mConnectTimeoutChangeSourceRun)
+                mHandler.removeCallbacks(mUpdateNetSpeedRun)
+                super.onBackPressed()
+            }
+        }
+    }
+
+    private val mPlaySelectedChannel = Runnable {
+        var currentTotal = 0
+        var groupIndex = 0
+        var channelIndex = -1
+        for (group in liveChannelGroupList) {
+            val groupChannelCount = group.getLiveChannels().size
+            if (currentTotal + groupChannelCount >= selectedChannelNumber) {
+                channelIndex = selectedChannelNumber - currentTotal - 1
+                break
+            }
+            currentTotal += groupChannelCount
+            groupIndex++
+        }
+        tvSelectedChannel?.visibility = View.INVISIBLE
+        tvSelectedChannel?.text = ""
+        if (channelIndex >= 0) {
+            loadChannelGroupDataAndPlay(groupIndex, channelIndex)
+        } else {
+            playChannel(currentChannelGroupIndex, currentLiveChannelIndex, false)
+        }
+        selectedChannelNumber = 0
+    }
+
+    @SuppressLint("SetTextI18n")
+    private fun numericKeyDown(digit: Int) {
+        selectedChannelNumber = selectedChannelNumber * 10 + digit
+        tvSelectedChannel?.text = selectedChannelNumber.toString()
+        ll_right_top_loading?.visibility = View.GONE
+        ll_right_top_huikan?.visibility = View.GONE
+        tvSelectedChannel?.visibility = View.VISIBLE
+
+        mHandler.removeCallbacks(mPlaySelectedChannel)
+        mHandler.postDelayed(mPlaySelectedChannel, 2500)
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val keyCode = event.keyCode
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == KeyEvent.KEYCODE_INFO || keyCode == KeyEvent.KEYCODE_HELP) {
+                showSettingGroup()
+            } else if (!isListOrSettingLayoutVisible()) {
+                when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_UP -> {
+                        if (Hawk.get(HawkConfig.LIVE_CHANNEL_REVERSE, false)) playNext() else playPrevious()
+                    }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        if (Hawk.get(HawkConfig.LIVE_CHANNEL_REVERSE, false)) playPrevious() else playNext()
+                    }
+                    KeyEvent.KEYCODE_DPAD_LEFT -> {
+                        if (isBack) showProgressBars(true) else playPreSource()
+                    }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        if (isBack) showProgressBars(true) else playNextSource()
+                    }
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {}
+                    else -> {
+                        val digit = when {
+                            keyCode in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> keyCode - KeyEvent.KEYCODE_0
+                            keyCode in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9 -> keyCode - KeyEvent.KEYCODE_NUMPAD_0
+                            else -> return super.dispatchKeyEvent(event)
+                        }
+                        numericKeyDown(digit)
+                    }
+                }
+            }
+        } else if (event.action == KeyEvent.ACTION_UP) {
+            if (!isListOrSettingLayoutVisible()) {
+                if ((keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) && event.repeatCount == 0) {
+                    showChannelList()
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if ((keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) && event.repeatCount == 0) {
+            mLongPressRunnable = Runnable {
+                showSettingGroup()
+            }
+            mmHandler.postDelayed(mLongPressRunnable!!, LONG_PRESS_DELAY)
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) {
+            mLongPressRunnable?.let {
+                mmHandler.removeCallbacks(it)
+                mLongPressRunnable = null
+            }
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        mVideoView?.resume()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        mVideoView?.pause()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        mVideoView?.let {
+            it.release()
+            mVideoView = null
+        }
+    }
+
+    private fun showChannelList() {
+        if (liveChannelGroupList.isEmpty()) return
+        if (tvRightSettingLayout?.visibility == View.VISIBLE) {
+            mHandler.removeCallbacks(mHideSettingLayoutRun)
+            mHandler.post(mHideSettingLayoutRun)
+            return
+        }
+        if (tvLeftChannelListLayout?.visibility == View.INVISIBLE) {
+            if (currentLiveLookBackIndex > -1) {
+                mRightEpgList?.setSelectedPosition(currentLiveLookBackIndex)
+                mRightEpgList?.post {
+                    mRightEpgList?.smoothScrollToPosition(currentLiveLookBackIndex)
+                }
+            }
+            refreshChannelList(currentChannelGroupIndex)
+            mHandler.postDelayed(mFocusCurrentChannelAndShowChannelList, 50)
+        } else {
+            mHandler.removeCallbacks(mHideChannelListRun)
+            mHandler.post(mHideChannelListRun)
+        }
+    }
+
+    private fun refreshChannelList(currentChannelGroupIndex: Int) {
+        val newChannels = getLiveChannels(currentChannelGroupIndex)
+        if (currentChannelGroupIndex == mLastChannelGroupIndex && isSameData(newChannels, mLastChannelList)) {
+            return
+        }
+        if (currentLiveChannelIndex > -1) {
+            mLiveChannelView?.scrollToPosition(currentLiveChannelIndex)
+            mLiveChannelView?.setSelection(currentLiveChannelIndex)
+        }
+        mChannelGroupView?.scrollToPosition(currentChannelGroupIndex)
+        mChannelGroupView?.setSelection(currentChannelGroupIndex)
+        mLastChannelGroupIndex = currentChannelGroupIndex
+        mLastChannelList = ArrayList(newChannels)
+        liveChannelItemAdapter?.setNewData(newChannels)
+    }
+
+    private fun isSameData(list1: List<LiveChannelItem>, list2: List<LiveChannelItem>): Boolean {
+        if (list1 === list2) return true
+        if (list1.size != list2.size) return false
+        for (i in list1.indices) {
+            if (list1[i] != list2[i]) return false
+        }
+        return true
+    }
+
+    private val mFocusCurrentChannelAndShowChannelList = Runnable {
+        if (mChannelGroupView!!.isScrolling || mLiveChannelView!!.isScrolling || mChannelGroupView!!.isComputingLayout || mLiveChannelView!!.isComputingLayout) {
+            mHandler.postDelayed(this, 100)
+        } else {
+            liveChannelGroupAdapter?.setSelectedGroupIndex(currentChannelGroupIndex)
+            liveChannelItemAdapter?.setSelectedChannelIndex(currentLiveChannelIndex)
+            val holder = mLiveChannelView?.findViewHolderForAdapterPosition(currentLiveChannelIndex)
+            holder?.itemView?.requestFocus()
+            tvLeftChannelListLayout?.visibility = View.VISIBLE
+            val viewObj = ViewObj(tvLeftChannelListLayout!!, tvLeftChannelListLayout!!.layoutParams as ViewGroup.MarginLayoutParams)
+            val animator = ObjectAnimator.ofObject(viewObj, "marginLeft", IntEvaluator(), -tvLeftChannelListLayout!!.layoutParams.width, 0)
+            animator.duration = 200
+            animator.addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    super.onAnimationEnd(animation)
+                    mHandler.removeCallbacks(mHideChannelListRun)
+                    mHandler.postDelayed(mHideChannelListRun, postTimeout.toLong())
+                }
+            })
+            animator.start()
+        }
+    }
+
+    private val mHideChannelListRun = Runnable {
+        val params = tvLeftChannelListLayout?.layoutParams as? ViewGroup.MarginLayoutParams ?: return@Runnable
+        if (tvLeftChannelListLayout?.visibility == View.VISIBLE) {
+            val viewObj = ViewObj(tvLeftChannelListLayout!!, params)
+            val animator = ObjectAnimator.ofObject(viewObj, "marginLeft", IntEvaluator(), 0, -tvLeftChannelListLayout!!.layoutParams.width)
+            animator.duration = 200
+            animator.addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    super.onAnimationEnd(animation)
+                    tvLeftChannelListLayout?.visibility = View.INVISIBLE
+                }
+            })
+            animator.start()
+        }
+    }
+
+    private fun showChannelInfo() {
+        tvChannelInfo?.text = String.format(Locale.getDefault(), "%d %s %s(%d/%d)",
+            currentLiveChannelItem!!.getChannelNum(),
+            currentLiveChannelItem!!.getChannelName(),
+            currentLiveChannelItem!!.getSourceName(),
+            currentLiveChannelItem!!.getSourceIndex() + 1,
+            currentLiveChannelItem!!.getSourceNum())
+
+        val lParams = FrameLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        if (tvRightSettingLayout?.visibility == View.VISIBLE) {
+            lParams.gravity = Gravity.LEFT
+            lParams.leftMargin = 60
+            lParams.topMargin = 30
+        } else {
+            lParams.gravity = Gravity.RIGHT
+            lParams.rightMargin = 60
+            lParams.topMargin = 30
+        }
+        tvChannelInfo?.layoutParams = lParams
+
+        tvChannelInfo?.visibility = View.VISIBLE
+        mHandler.removeCallbacks(mHideChannelInfoRun)
+        mHandler.postDelayed(mHideChannelInfoRun, 3000)
+    }
+
+    private val mHideChannelInfoRun = Runnable {
+        tvChannelInfo?.visibility = View.INVISIBLE
+    }
+
+    private fun initLiveObj() {
+        val position = Hawk.get(HawkConfig.LIVE_GROUP_INDEX, 0)
+        val liveGroups: JsonArray = Hawk.get(HawkConfig.LIVE_GROUP_LIST, JsonArray())
+        val livesOBJ = liveGroups[position].asJsonObject
+        val type = if (livesOBJ.has("type")) livesOBJ.get("type").asString else "0"
+
+        if (livesOBJ.has("catchup")) {
+            catchup = livesOBJ.getAsJsonObject("catchup")
+            LOG.i("echo-catchup :" + catchup.toString())
+            hasCatchup = true
+        }
+        if (livesOBJ.has("logo")) {
+            logoUrl = livesOBJ.get("logo").asString
+        }
+        if (type == "3") {
+            var pyJar = ""
+            if (livesOBJ.has("jar")) {
+                pyJar = if (livesOBJ.has("jar")) livesOBJ.get("jar").asString else ""
+            } else if (livesOBJ.has("api")) {
+                pyJar = if (livesOBJ.has("api")) livesOBJ.get("api").asString else ""
+                var ext = ""
+                if (livesOBJ.has("ext") && (livesOBJ.get("ext").isJsonObject || livesOBJ.get("ext").isJsonArray)) {
+                    ext = livesOBJ.get("ext").toString()
+                } else {
+                    ext = DefaultConfig.safeJsonString(livesOBJ, "ext", "")
+                }
+                LOG.i("echo-ext:$ext")
+                if (ext.isNotEmpty()) pyJar = "$pyJar?extend=$ext"
+            }
+            ApiConfig.get().setLiveJar(pyJar)
+        }
+    }
+
+    private fun liveWebHeader(): HashMap<String, String>? {
+        return Hawk.get(HawkConfig.LIVE_WEB_HEADER)
+    }
+
+    private fun playChannel(channelGroupIndex: Int, liveChannelIndex: Int, changeSource: Boolean): Boolean {
+        if ((channelGroupIndex == currentChannelGroupIndex && liveChannelIndex == currentLiveChannelIndex && !changeSource)
+            || (changeSource && currentLiveChannelItem?.getSourceNum() == 1)) {
+            return true
+        }
+        mVideoView?.release()
+        if (!changeSource) {
+            currentChannelGroupIndex = channelGroupIndex
+            currentLiveChannelIndex = liveChannelIndex
+            currentLiveChannelItem = getLiveChannels(currentChannelGroupIndex)[currentLiveChannelIndex]
+            Hawk.put(HawkConfig.LIVE_CHANNEL, currentLiveChannelItem!!.getChannelName())
+            livePlayerManager.getLiveChannelPlayer(mVideoView, currentLiveChannelItem!!.getChannelName())
+        }
+
+        channel_Name = currentLiveChannelItem
+        currentLiveLookBackIndex = -1
+        epgListAdapter?.setSelectedEpgIndex(-1)
+        isSHIYI = false
+        isBack = false
+        if (hasCatchup || currentLiveChannelItem?.getUrl()?.contains("PLTV/") == true || currentLiveChannelItem?.getUrl()?.contains("TVOD/") == true) {
+            currentLiveChannelItem?.setinclude_back(true)
+        } else {
+            currentLiveChannelItem?.setinclude_back(false)
+        }
+        showBottomEpg()
+        getEpg(Date())
+        backcontroller?.visibility = View.GONE
+        ll_right_top_huikan?.visibility = View.GONE
+        mVideoView?.let {
+            liveWebHeader()?.let { header -> LOG.i("echo-${header.toString()}") }
+            it.setUrl(currentLiveChannelItem!!.getUrl(), liveWebHeader())
+            it.start()
+        }
+        return true
+    }
+
+    private fun playNext() {
+        if (!isCurrentLiveChannelValid()) return
+        val groupChannelIndex = getNextChannel(1)
+        playChannel(groupChannelIndex[0], groupChannelIndex[1], false)
+    }
+
+    private fun playPrevious() {
+        if (!isCurrentLiveChannelValid()) return
+        val groupChannelIndex = getNextChannel(-1)
+        playChannel(groupChannelIndex[0], groupChannelIndex[1], false)
+    }
+
+    fun playPreSource() {
+        if (!isCurrentLiveChannelValid()) return
+        currentLiveChannelItem?.preSource()
+        playChannel(currentChannelGroupIndex, currentLiveChannelIndex, true)
+    }
+
+    fun playNextSource() {
+        if (!isCurrentLiveChannelValid()) return
+        currentLiveChannelItem?.nextSource()
+        playChannel(currentChannelGroupIndex, currentLiveChannelIndex, true)
+    }
+
+    private fun showSettingGroup() {
+        if (tvLeftChannelListLayout?.visibility == View.VISIBLE) {
+            mHandler.removeCallbacks(mHideChannelListRun)
+            mHandler.post(mHideChannelListRun)
+        }
+        if (tvRightSettingLayout?.visibility == View.INVISIBLE) {
+            if (!isCurrentLiveChannelValid()) return
+            loadCurrentSourceList()
+            liveSettingGroupAdapter?.setNewData(liveSettingGroupList)
+            selectSettingGroup(0, false)
+            mSettingGroupView?.scrollToPosition(0)
+            mSettingItemView?.scrollToPosition(currentLiveChannelItem!!.getSourceIndex())
+            mHandler.postDelayed(mFocusAndShowSettingGroup, 50)
+        } else {
+            mHandler.removeCallbacks(mHideSettingLayoutRun)
+            mHandler.post(mHideSettingLayoutRun)
+        }
+    }
+
+    private val mFocusAndShowSettingGroup = Runnable {
+        if (mSettingGroupView!!.isScrolling || mSettingItemView!!.isScrolling || mSettingGroupView!!.isComputingLayout || mSettingItemView!!.isComputingLayout) {
+            mHandler.postDelayed(this, 100)
+        } else {
+            val holder = mSettingGroupView?.findViewHolderForAdapterPosition(0)
+            holder?.itemView?.requestFocus()
+            tvRightSettingLayout?.visibility = View.VISIBLE
+            val params = tvRightSettingLayout?.layoutParams as? ViewGroup.MarginLayoutParams
+            if (tvRightSettingLayout?.visibility == View.VISIBLE && params != null) {
+                val viewObj = ViewObj(tvRightSettingLayout!!, params)
+                val animator = ObjectAnimator.ofObject(viewObj, "marginRight", IntEvaluator(), -tvRightSettingLayout!!.layoutParams.width, 0)
+                animator.duration = 200
+                animator.addListener(object : AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(animation: Animator) {
+                        super.onAnimationEnd(animation)
+                        mHandler.postDelayed(mHideSettingLayoutRun, postTimeout.toLong())
+                    }
+                })
+                animator.start()
+            }
+        }
+    }
+
+    private val mHideSettingLayoutRun = Runnable {
+        val params = tvRightSettingLayout?.layoutParams as? ViewGroup.MarginLayoutParams ?: return@Runnable
+        if (tvRightSettingLayout?.visibility == View.VISIBLE) {
+            val viewObj = ViewObj(tvRightSettingLayout!!, params)
+            val animator = ObjectAnimator.ofObject(viewObj, "marginRight", IntEvaluator(), 0, -tvRightSettingLayout!!.layoutParams.width)
+            animator.duration = 200
+            animator.addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    super.onAnimationEnd(animation)
+                    tvRightSettingLayout?.visibility = View.INVISIBLE
+                    liveSettingGroupAdapter?.setSelectedGroupIndex(-1)
+                }
+            })
+            animator.start()
+        }
+    }
+
+    private fun initEpgListView() {
+        mRightEpgList?.setHasFixedSize(true)
+        mRightEpgList?.setLayoutManager(V7LinearLayoutManager(this, 1, false))
+        epgListAdapter = LiveEpgAdapter()
+        mRightEpgList?.setAdapter(epgListAdapter)
+
+        mRightEpgList?.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                super.onScrollStateChanged(recyclerView, newState)
+                mHandler.removeCallbacks(mHideChannelListRun)
+                mHandler.postDelayed(mHideChannelListRun, postTimeout.toLong())
+            }
+        })
+
+        mRightEpgList?.setOnItemListener(object : TvRecyclerView.OnItemListener {
+            override fun onItemPreSelected(parent: TvRecyclerView?, itemView: View?, position: Int) {
+                epgListAdapter?.setFocusedEpgIndex(-1)
+            }
+
+            override fun onItemSelected(parent: TvRecyclerView?, itemView: View?, position: Int) {
+                mHandler.removeCallbacks(mHideChannelListRun)
+                mHandler.postDelayed(mHideChannelListRun, postTimeout.toLong())
+                epgListAdapter?.setFocusedEpgIndex(position)
+            }
+
+            @SuppressLint("NotifyDataSetChanged")
+            override fun onItemClick(parent: TvRecyclerView?, itemView: View?, position: Int) {
+                if (position == currentLiveLookBackIndex) return
+                currentLiveLookBackIndex = position
+                val date = if (liveEpgDateAdapter?.getSelectedIndex() ?: -1 < 0) Date() else liveEpgDateAdapter!!.getData()[liveEpgDateAdapter!!.getSelectedIndex()].getDateParamVal()
+                val dateFormat = SimpleDateFormat("yyyyMMdd")
+                dateFormat.timeZone = TimeZone.getTimeZone("GMT+8:00")
+                val selectedData = epgListAdapter?.getItem(position) ?: return
+                val targetDate = dateFormat.format(date)
+                val shiyiStartdate = targetDate + selectedData.originStart.replace(":", "") + "30"
+                val shiyiEnddate = targetDate + selectedData.originEnd.replace(":", "") + "30"
+                val now = Date()
+                if (Date().compareTo(selectedData.startdateTime) < 0) return
+                epgListAdapter?.setSelectedEpgIndex(position)
+                if (now.compareTo(selectedData.startdateTime) >= 0 && now.compareTo(selectedData.enddateTime) <= 0) {
+                    mVideoView?.release()
+                    isSHIYI = false
+                    mVideoView?.setUrl(currentLiveChannelItem!!.getUrl(), liveWebHeader())
+                    mVideoView?.start()
+                    epgListAdapter?.setShiyiSelection(-1, false, timeFormat.format(date))
+                    epgListAdapter?.notifyDataSetChanged()
+                    showProgressBars(false)
+                    return
+                }
+                var shiyiUrl = currentLiveChannelItem!!.getUrl()
+                if (now.compareTo(selectedData.startdateTime) < 0) {
+                } else if (hasCatchup || shiyiUrl.contains("PLTV/") || shiyiUrl.contains("TVOD/")) {
+                    shiyiUrl = shiyiUrl.replace("/PLTV/", "/TVOD/")
+                    mHandler.removeCallbacks(mHideChannelListRun)
+                    mHandler.postDelayed(mHideChannelListRun, 100)
+                    mVideoView?.release()
+                    shiyi_time = "$shiyiStartdate-$shiyiEnddate"
+                    isSHIYI = true
+                    if (hasCatchup) {
+                        val replace = catchup!!.get("replace").asString
+                        val source = catchup!!.get("source").asString
+                        val parts = replace.split(",")
+                        val left = if (parts.isNotEmpty()) parts[0].trim() else ""
+                        val right = if (parts.size > 1) parts[1].trim() else ""
+                        shiyiUrl = shiyiUrl.replace(left.toRegex(), right)
+                        val startHHmm = selectedData.originStart.replace(":", "")
+                        val endHHmm = selectedData.originEnd.replace(":", "")
+                        val pattern = Pattern.compile("\\\$\\\$\{\\\((b|e)\\\)(.*?)\\\}")
+                        val matcher = pattern.matcher(source)
+                        val valueMap = hashMapOf<String, String>()
+                        valueMap["b"] = targetDate + "T" + startHHmm
+                        valueMap["e"] = targetDate + "T" + endHHmm
+                        val result = StringBuffer()
+                        while (matcher.find()) {
+                            val type = matcher.group(1)
+                            val replacement = valueMap[type]
+                            if (replacement != null) {
+                                matcher.appendReplacement(result, replacement)
+                            }
+                        }
+                        matcher.appendTail(result)
+                        LOG.i("echo-shiyiurl:$shiyiUrl")
+                        if (shiyiUrl.endsWith("&")) shiyiUrl = shiyiUrl.substring(0, shiyiUrl.length - 1)
+                        shiyiUrl += result.toString()
+                    } else {
+                        if (shiyiUrl.indexOf("?") <= 0) {
+                            shiyiUrl += "?playseek=$shiyi_time"
+                        } else if (shiyiUrl.indexOf("playseek") > 0) {
+                            shiyiUrl = shiyiUrl.replace("playseek=(.*)".toRegex(), "playseek=$shiyi_time")
+                        } else {
+                            shiyiUrl += "&playseek=$shiyi_time"
+                        }
+                    }
+                    LOG.i("echo-回看地址playUrl : $shiyiUrl")
+                    playUrl = shiyiUrl
+
+                    mVideoView?.setUrl(playUrl, liveWebHeader())
+                    mVideoView?.start()
+                    epgListAdapter?.setShiyiSelection(position, true, timeFormat.format(date))
+                    epgListAdapter?.notifyDataSetChanged()
+                    mRightEpgList?.setSelectedPosition(position)
+                    mRightEpgList?.post {
+                        mRightEpgList?.smoothScrollToPosition(position)
+                    }
+                    shiyi_time_c = getTime(formatDate.format(nowday) + " " + selectedData.start + ":30", formatDate.format(nowday) + " " + selectedData.end + ":30").toInt()
+                    val lp = iv_play?.layoutParams
+                    lp?.width = videoHeight / 7
+                    lp?.height = videoHeight / 7
+                    sBar = findViewById(R.id.pb_progressbar)
+                    sBar?.max = shiyi_time_c * 1000
+                    sBar?.progress = mVideoView?.currentPosition?.toInt() ?: 0
+                    tv_currentpos?.text = durationToString(mVideoView?.currentPosition?.toInt() ?: 0)
+                    tv_duration?.text = durationToString(shiyi_time_c * 1000)
+                    showProgressBars(true)
+                    isBack = true
+                }
+            }
+        })
+
+        epgListAdapter?.setOnItemClickListener { adapter, view, position ->
+            if (position == currentLiveLookBackIndex) return@setOnItemClickListener
+            currentLiveLookBackIndex = position
+            val date = if (liveEpgDateAdapter?.getSelectedIndex() ?: -1 < 0) Date() else liveEpgDateAdapter!!.getData()[liveEpgDateAdapter!!.getSelectedIndex()].getDateParamVal()
+            val dateFormat = SimpleDateFormat("yyyyMMdd")
+            dateFormat.timeZone = TimeZone.getTimeZone("GMT+8:00")
+            val selectedData = epgListAdapter?.getItem(position) ?: return@setOnItemClickListener
+            val targetDate = dateFormat.format(date)
+            val shiyiStartdate = targetDate + selectedData.originStart.replace(":", "") + "00"
+            val shiyiEnddate = targetDate + selectedData.originEnd.replace(":", "") + "00"
+            val now = Date()
+            if (Date().compareTo(selectedData.startdateTime) < 0) return@setOnItemClickListener
+            epgListAdapter?.setSelectedEpgIndex(position)
+            if (now.compareTo(selectedData.startdateTime) >= 0 && now.compareTo(selectedData.enddateTime) <= 0) {
+                mVideoView?.release()
+                isSHIYI = false
+                mVideoView?.setUrl(currentLiveChannelItem!!.getUrl(), liveWebHeader())
+                mVideoView?.start()
+                epgListAdapter?.setShiyiSelection(-1, false, timeFormat.format(date))
+                epgListAdapter?.notifyDataSetChanged()
+                showProgressBars(false)
+                return@setOnItemClickListener
+            }
+            var shiyiUrl = currentLiveChannelItem!!.getUrl()
+            if (now.compareTo(selectedData.startdateTime) < 0) {
+            } else if (hasCatchup || shiyiUrl.contains("PLTV/") || shiyiUrl.contains("TVOD/")) {
+                shiyiUrl = shiyiUrl.replace("/PLTV/", "/TVOD/")
+                mHandler.removeCallbacks(mHideChannelListRun)
+                mHandler.postDelayed(mHideChannelListRun, 100)
+                mVideoView?.release()
+                shiyi_time = "$shiyiStartdate-$shiyiEnddate"
+                isSHIYI = true
+                if (hasCatchup) {
+                    val replace = catchup!!.get("replace").asString
+                    val source = catchup!!.get("source").asString
+                    val parts = replace.split(",")
+                    val left = if (parts.isNotEmpty()) parts[0].trim() else ""
+                    val right = if (parts.size > 1) parts[1].trim() else ""
+                    shiyiUrl = shiyiUrl.replace(left.toRegex(), right)
+                    val startHHmm = selectedData.originStart.replace(":", "")
+                    val endHHmm = selectedData.originEnd.replace(":", "")
+                    val pattern = Pattern.compile("\\\$\\\$\{\\\((b|e)\\\)(.*?)\\\}")
+                    val matcher = pattern.matcher(source)
+                    val valueMap = hashMapOf<String, String>()
+                    valueMap["b"] = targetDate + "T" + startHHmm
+                    valueMap["e"] = targetDate + "T" + endHHmm
+                    val result = StringBuffer()
+                    while (matcher.find()) {
+                        val type = matcher.group(1)
+                        val replacement = valueMap[type]
+                        if (replacement != null) {
+                            matcher.appendReplacement(result, replacement)
+                        }
+                    }
+                    matcher.appendTail(result)
+                    LOG.i("echo-shiyiurl:$shiyiUrl")
+                    if (shiyiUrl.endsWith("&")) shiyiUrl = shiyiUrl.substring(0, shiyiUrl.length - 1)
+                    shiyiUrl += result.toString()
+                } else {
+                    if (shiyiUrl.indexOf("?") <= 0) {
+                        shiyiUrl += "?playseek=$shiyi_time"
+                    } else if (shiyiUrl.indexOf("playseek") > 0) {
+                        shiyiUrl = shiyiUrl.replace("playseek=(.*)".toRegex(), "playseek=$shiyi_time")
+                    } else {
+                        shiyiUrl += "&playseek=$shiyi_time"
+                    }
+                }
+                LOG.i("echo-回看地址playUrl : $shiyiUrl")
+                playUrl = shiyiUrl
+                liveWebHeader()?.let { LOG.i("echo-liveWebHeader : ${it.toString()}") }
+                mVideoView?.setUrl(playUrl, liveWebHeader())
+                mVideoView?.start()
+                epgListAdapter?.setShiyiSelection(position, true, timeFormat.format(date))
+                epgListAdapter?.notifyDataSetChanged()
+                mRightEpgList?.setSelectedPosition(position)
+                mRightEpgList?.post {
+                    mRightEpgList?.smoothScrollToPosition(position)
+                }
+                shiyi_time_c = getTime(formatDate.format(nowday) + " " + selectedData.start + ":00", formatDate.format(nowday) + " " + selectedData.end + ":00").toInt()
+                val lp = iv_play?.layoutParams
+                lp?.width = videoHeight / 7
+                lp?.height = videoHeight / 7
+                sBar = findViewById(R.id.pb_progressbar)
+                sBar?.max = shiyi_time_c * 1000
+                sBar?.progress = mVideoView?.currentPosition?.toInt() ?: 0
+                tv_currentpos?.text = durationToString(mVideoView?.currentPosition?.toInt() ?: 0)
+                tv_duration?.text = durationToString(shiyi_time_c * 1000)
+                showProgressBars(true)
+                isBack = true
+            }
+        }
+    }
+
+    private fun initDayList() {
+        liveDayList.clear()
+        val daylist = LiveDayListGroup()
+        val newday = Date(nowday.time)
+        val day = formatDate1.format(newday)
+        LOG.i("echo-date$day")
+        daylist.setGroupIndex(0)
+        daylist.setGroupName(day)
+        liveDayList.add(daylist)
+    }
+
+    private fun initEpgDateView() {
+        mEpgDateGridView?.setHasFixedSize(true)
+        mEpgDateGridView?.setLayoutManager(V7LinearLayoutManager(this, 1, false))
+        liveEpgDateAdapter = LiveEpgDateAdapter()
+        val calendar = Calendar.getInstance()
+        calendar.time = Date()
+        val datePresentFormat = SimpleDateFormat("MM-dd")
+        calendar.add(Calendar.DAY_OF_MONTH, 0)
+        for (i in 0 until 1) {
+            val dateIns = calendar.time
+            val epgDate = LiveEpgDate()
+            epgDate.setIndex(i)
+            epgDate.setDatePresented(datePresentFormat.format(dateIns))
+            epgDate.setDateParamVal(dateIns)
+            liveEpgDateAdapter?.addData(epgDate)
+        }
+        mEpgDateGridView?.adapter = liveEpgDateAdapter
+        mEpgDateGridView?.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                super.onScrollStateChanged(recyclerView, newState)
+                mHandler.removeCallbacks(mHideChannelListRun)
+                mHandler.postDelayed(mHideChannelListRun, postTimeout.toLong())
+            }
+        })
+        liveEpgDateAdapter?.setSelectedIndex(0)
+        mEpgDateGridView?.visibility = View.GONE
+    }
+
+    private fun initVideoView() {
+        val controller = LiveController(this)
+        controller.setListener(object : LiveController.LiveControlListener {
+            override fun singleTap(): Boolean {
+                showChannelList()
+                return true
+            }
+
+            override fun longPress() {
+                if (isBack) {
+                    showProgressBars(true)
+                } else {
+                    showSettingGroup()
+                }
+            }
+
+            override fun playStateChanged(playState: Int) {
+                mHandler.removeCallbacks(mConnectTimeoutChangeSourceRun)
+                when (playState) {
+                    VideoView.STATE_IDLE, VideoView.STATE_PAUSED -> {}
+                    VideoView.STATE_PREPARED, VideoView.STATE_BUFFERED, VideoView.STATE_PLAYING -> {
+                        currentLiveChangeSourceTimes = 0
+                    }
+                    VideoView.STATE_ERROR, VideoView.STATE_PLAYBACK_COMPLETED -> {
+                        mHandler.postDelayed(mConnectTimeoutChangeSourceRun, 3500)
+                    }
+                    VideoView.STATE_PREPARING, VideoView.STATE_BUFFERING -> {
+                        mHandler.postDelayed(mConnectTimeoutChangeSourceRun, (Hawk.get(HawkConfig.LIVE_CONNECT_TIMEOUT, 1) + 1) * 5000L)
+                    }
+                    else -> LOG.i("echo-Unexpected live_play state: $playState")
+                }
+            }
+
+            override fun changeSource(direction: Int) {
+                if (direction > 0) {
+                    if (isBack) showProgressBars(true) else playNextSource()
+                } else {
+                    playPreSource()
+                }
+            }
+        })
+        controller.setCanChangePosition(false)
+        controller.setEnableInNormal(true)
+        controller.setGestureEnabled(true)
+        controller.setDoubleTapTogglePlayEnabled(false)
+        mVideoView?.setVideoController(controller)
+        mVideoView?.setProgressManager(null)
+    }
+
+    private val mConnectTimeoutChangeSourceRun = Runnable {
+        currentLiveChangeSourceTimes++
+        if (currentLiveChannelItem?.getSourceNum() == currentLiveChangeSourceTimes) {
+            currentLiveChangeSourceTimes = 0
+            val groupChannelIndex = getNextChannel(if (Hawk.get(HawkConfig.LIVE_CHANNEL_REVERSE, false)) -1 else 1)
+            playChannel(groupChannelIndex[0], groupChannelIndex[1], false)
+        } else {
+            playNextSource()
+        }
+    }
