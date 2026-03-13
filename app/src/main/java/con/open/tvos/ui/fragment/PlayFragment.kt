@@ -1115,3 +1115,139 @@ class PlayFragment : BaseLazyFragment() {
         override fun setOverScrollMode(mode: Int) { super.setOverScrollMode(mode); if (mContext is Activity) AutoSize.autoConvertDensityOfCustomAdapt(mContext as Activity, this@PlayFragment) }
         override fun dispatchKeyEvent(event: KeyEvent) = false
     }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun configWebViewSys(webView: WebView) {
+        val layoutParams = if (Hawk.get(HawkConfig.DEBUG_OPEN, false)) ViewGroup.LayoutParams(800, 400) else ViewGroup.LayoutParams(1, 1)
+        webView.isFocusable = false; webView.isFocusableInTouchMode = false; webView.clearFocus()
+        webView.overScrollMode = View.OVER_SCROLL_ALWAYS
+        if (!isAdded) return
+        requireActivity().addContentView(webView, layoutParams)
+        webView.settings.apply {
+            setNeedInitialFocus(false); setAllowContentAccess(true); setAllowFileAccess(true)
+            setAllowUniversalAccessFromFileURLs(true); setAllowFileAccessFromFileURLs(true)
+            setDatabaseEnabled(true); setDomStorageEnabled(true); setJavaScriptEnabled(true)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) setMediaPlaybackRequiresUserGesture(false)
+            setBlockNetworkImage(!Hawk.get(HawkConfig.DEBUG_OPEN, false)); setUseWideViewPort(true)
+            setJavaScriptCanOpenWindowsAutomatically(true); setSupportMultipleWindows(false)
+            setLoadWithOverviewMode(true); setBuiltInZoomControls(true); setSupportZoom(false)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW)
+            setCacheMode(WebSettings.LOAD_DEFAULT); setDefaultTextEncodingName("utf-8")
+            setUserAgentString(userAgentString)
+        }
+        webView.setWebChromeClient(object : WebChromeClient() {
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage) = false
+            override fun onJsAlert(view: WebView, url: String, message: String, result: JsResult) = true
+            override fun onJsConfirm(view: WebView, url: String, message: String, result: JsResult) = true
+            override fun onJsPrompt(view: WebView, url: String, message: String, defaultValue: String, result: JsPromptResult) = true
+        })
+        webView.setWebViewClient(SysWebClient())
+        webView.setBackgroundColor(Color.BLACK)
+    }
+
+    private inner class SysWebClient : WebViewClient() {
+        @SuppressLint("WebViewClientOnReceivedSslError")
+        override fun onReceivedSslError(webView: WebView, sslErrorHandler: SslErrorHandler, sslError: SslError) { sslErrorHandler.proceed() }
+        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = false
+        override fun shouldOverrideUrlLoading(view: WebView, url: String) = false
+        override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) { super.onPageStarted(view, url, favicon) }
+        override fun onPageFinished(view: WebView, url: String) {
+            super.onPageFinished(view, url)
+            LOG.i("echo-onPageFinished url:$url")
+            if (url != "about:blank") mController.evaluateScript(sourceBean, url, view, null)
+        }
+
+        private fun checkIsVideo(url: String, headers: HashMap<String, String>): WebResourceResponse? {
+            if (url.endsWith("/favicon.ico")) return if (url.startsWith("http://127.0.0.1")) WebResourceResponse("image/x-icon", "UTF-8", null) else null
+            if (VideoParseRuler.isFilter(webUrl, url)) { LOG.i("shouldInterceptLoadRequest filter:$url"); return null }
+            val ad = loadedUrls.getOrPut(url) { AdBlocker.isAd(url) }
+            if (!ad && checkVideoFormat(url)) {
+                loadFoundVideoUrls?.add(url); loadFoundVideoUrlsHeader?.put(url, headers)
+                LOG.i("echo-loadFoundVideoUrl:$url")
+                if (loadFoundCount.incrementAndGet() == 1) {
+                    stopLoadWebView(false); SuperParse.stopJsonJx()
+                    val videoUrl = loadFoundVideoUrls?.poll() ?: return null
+                    mHandler?.removeMessages(100)
+                    CookieManager.getInstance().getCookie(videoUrl).takeIf { !TextUtils.isEmpty(it) }?.let { headers["Cookie"] = " $it" }
+                    playUrl(videoUrl, headers)
+                }
+            }
+            return if (ad || loadFoundCount.get() > 0) AdBlocker.createEmptyResource() else null
+        }
+
+        @Nullable override fun shouldInterceptRequest(view: WebView, url: String): WebResourceResponse? = null
+
+        @TargetApi(Build.VERSION_CODES.LOLLIPOP)
+        @Nullable override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+            val url = request.url.toString()
+            LOG.i("echo-shouldInterceptRequest url:$url")
+            val webHeaders = HashMap<String, String>()
+            request.requestHeaders?.filter { it.key.equals("user-agent", ignoreCase = true) || it.key.equals("referer", ignoreCase = true) || it.key.equals("origin", ignoreCase = true) }
+                ?.forEach { webHeaders[it.key] = " ${it.value}" }
+            return checkIsVideo(url, webHeaders)
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun configWebViewX5(webView: XWalkView) {
+        val layoutParams = if (Hawk.get(HawkConfig.DEBUG_OPEN, false)) ViewGroup.LayoutParams(800, 400) else ViewGroup.LayoutParams(1, 1)
+        webView.isFocusable = false; webView.isFocusableInTouchMode = false; webView.clearFocus()
+        webView.overScrollMode = View.OVER_SCROLL_ALWAYS
+        if (!isAdded) return
+        requireActivity().addContentView(webView, layoutParams)
+        webView.settings.apply {
+            setAllowContentAccess(true); setAllowFileAccess(true); setAllowUniversalAccessFromFileURLs(true)
+            setAllowFileAccessFromFileURLs(true); setDatabaseEnabled(true); setDomStorageEnabled(true); setJavaScriptEnabled(true)
+            setBlockNetworkImage(!Hawk.get(HawkConfig.DEBUG_OPEN, false))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) setMediaPlaybackRequiresUserGesture(false)
+            setUseWideViewPort(true); setJavaScriptCanOpenWindowsAutomatically(true)
+            setSupportMultipleWindows(false); setLoadWithOverviewMode(true); setBuiltInZoomControls(true); setSupportZoom(false)
+            setCacheMode(WebSettings.LOAD_DEFAULT)
+        }
+        webView.setBackgroundColor(Color.BLACK)
+        webView.setUIClient(object : XWalkUIClient(webView) {
+            override fun onConsoleMessage(view: XWalkView, message: String, lineNumber: Int, sourceId: String, messageType: ConsoleMessageType) = false
+            override fun onJsAlert(view: XWalkView, url: String, message: String, result: XWalkJavascriptResult) = true
+            override fun onJsConfirm(view: XWalkView, url: String, message: String, result: XWalkJavascriptResult) = true
+            override fun onJsPrompt(view: XWalkView, url: String, message: String, defaultValue: String, result: XWalkJavascriptResult) = true
+        })
+        webView.setResourceClient(XWalkWebClient(webView))
+    }
+
+    private inner class XWalkWebClient(private val view: XWalkView) : XWalkResourceClient(view) {
+        override fun onDocumentLoadedInFrame(view: XWalkView, frameId: Long) { super.onDocumentLoadedInFrame(view, frameId) }
+        override fun onLoadStarted(view: XWalkView, url: String) { super.onLoadStarted(view, url) }
+        override fun onLoadFinished(view: XWalkView, url: String) {
+            super.onLoadFinished(view, url)
+            LOG.i("echo-onLoadFinished url:$url")
+            if (url != "about:blank") mController.evaluateScript(sourceBean, url, null, view)
+        }
+        override fun onProgressChanged(view: XWalkView, progressInPercent: Int) { super.onProgressChanged(view, progressInPercent) }
+
+        override fun shouldInterceptLoadRequest(view: XWalkView, request: XWalkWebResourceRequest): XWalkWebResourceResponse? {
+            val url = request.url.toString()
+            LOG.i("echo-shouldInterceptLoadRequest url:$url")
+            if (url.endsWith("/favicon.ico")) return if (url.startsWith("http://127.0.0.1")) createXWalkWebResourceResponse("image/x-icon", "UTF-8", null) else null
+            if (VideoParseRuler.isFilter(webUrl, url)) { LOG.i("shouldInterceptLoadRequest filter:$url"); return null }
+            val ad = loadedUrls.getOrPut(url) { AdBlocker.isAd(url) }
+            if (!ad && checkVideoFormat(url)) {
+                val webHeaders = HashMap<String, String>()
+                request.requestHeaders?.filter { it.key.equals("user-agent", ignoreCase = true) || it.key.equals("referer", ignoreCase = true) || it.key.equals("origin", ignoreCase = true) }
+                    ?.forEach { webHeaders[it.key] = " ${it.value}" }
+                loadFoundVideoUrls?.add(url); loadFoundVideoUrlsHeader?.put(url, webHeaders)
+                LOG.i("echo-loadFoundVideoUrl:$url")
+                if (loadFoundCount.incrementAndGet() == 1) {
+                    stopLoadWebView(false); SuperParse.stopJsonJx()
+                    val videoUrl = loadFoundVideoUrls?.poll() ?: return null
+                    mHandler?.removeMessages(100)
+                    CookieManager.getInstance().getCookie(videoUrl).takeIf { !TextUtils.isEmpty(it) }?.let { webHeaders["Cookie"] = " $it" }
+                    playUrl(videoUrl, webHeaders)
+                }
+            }
+            return if (ad || loadFoundCount.get() > 0) createXWalkWebResourceResponse("text/plain", "utf-8", ByteArrayInputStream("".toByteArray())) else null
+        }
+
+        override fun shouldOverrideUrlLoading(view: XWalkView, s: String) = false
+        override fun onReceivedSslError(view: XWalkView, callback: ValueCallback<Boolean>, error: SslError) { callback.onReceiveValue(true) }
+    }
+}
