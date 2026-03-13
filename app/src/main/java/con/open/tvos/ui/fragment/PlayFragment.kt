@@ -542,3 +542,576 @@ class PlayFragment : BaseLazyFragment() {
             }
         }
     }
+
+    private fun initSubtitleView() {
+        var trackInfo: TrackInfo? = null
+        val mediaPlayer = mVideoView?.getMediaPlayer()
+        if (mediaPlayer is IjkMediaPlayer) {
+            trackInfo = mediaPlayer.trackInfo
+            if (trackInfo != null && trackInfo.subtitle.isNotEmpty()) {
+                mController.mSubtitleView.hasInternal = true
+            }
+            mediaPlayer.loadDefaultTrack(trackInfo, progressKey)
+            mediaPlayer.setOnTimedTextListener { _, text ->
+                if (text == null) return@setOnTimedTextListener
+                if (mController.mSubtitleView.isInternal) {
+                    val subtitle = com.github.tvbox.osc.subtitle.model.Subtitle()
+                    subtitle.content = text.text
+                    mController.mSubtitleView.onSubtitleChanged(subtitle)
+                }
+            }
+        }
+        if (mediaPlayer is ExoPlayer) {
+            mediaPlayer.loadDefaultTrack(progressKey)
+        }
+        mController.mSubtitleView.bindToMediaPlayer(mVideoView?.getMediaPlayer())
+        mController.mSubtitleView.setPlaySubtitleCacheKey(subtitleCacheKey)
+        val subtitlePathCache = CacheManager.getCache(MD5.string2MD5(subtitleCacheKey)) as? String
+        if (!subtitlePathCache.isNullOrEmpty()) {
+            mController.mSubtitleView.setSubtitlePath(subtitlePathCache)
+        } else {
+            if (!playSubtitle.isNullOrEmpty()) {
+                mController.mSubtitleView.setSubtitlePath(playSubtitle)
+            } else {
+                if (mController.mSubtitleView.hasInternal) {
+                    mController.mSubtitleView.isInternal = true
+                    if (trackInfo != null && trackInfo.subtitle.isNotEmpty()) {
+                        val subtitleTrackList = trackInfo.subtitle
+                        val selectedIndex = trackInfo.getSubtitleSelected(true)
+                        var hasCh = false
+                        for (subtitleTrackInfoBean in subtitleTrackList) {
+                            val lowerLang = subtitleTrackInfoBean.language.lowercase()
+                            if (lowerLang.contains("zh") || lowerLang.contains("ch")) {
+                                hasCh = true
+                                if (selectedIndex != subtitleTrackInfoBean.index) {
+                                    (mVideoView?.getMediaPlayer() as? IjkMediaPlayer)?.setTrack(subtitleTrackInfoBean.index)
+                                    break
+                                }
+                            }
+                        }
+                        if (!hasCh) {
+                            (mVideoView?.getMediaPlayer() as? IjkMediaPlayer)?.setTrack(subtitleTrackList[0].index)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun initViewModel() {
+        sourceViewModel = ViewModelProvider(this).get(SourceViewModel::class.java)
+        sourceViewModel?.playResult?.observe(this) { info ->
+            webPlayUrl = null
+            if (info != null) {
+                try {
+                    progressKey = info.optString("proKey", null)
+                    val parse = info.optString("parse", "1") == "1"
+                    val jx = info.optString("jx", "0") == "1"
+                    playSubtitle = info.optString("subt", "")
+                    if (playSubtitle?.isEmpty() == true && info.has("subs")) {
+                        try {
+                            val obj = info.optJSONArray("subs")?.optJSONObject(0)
+                            var url = obj?.optString("url", "") ?: ""
+                            if (!TextUtils.isEmpty(url) && !FileUtils.hasExtension(url)) {
+                                val format = obj?.optString("format", "") ?: ""
+                                val name = obj?.optString("name", "字幕") ?: "字幕"
+                                val ext = when (format) {
+                                    "text/x-ssa" -> ".ass"
+                                    "text/vtt" -> ".vtt"
+                                    "application/x-subrip" -> ".srt"
+                                    "text/lrc" -> ".lrc"
+                                    else -> ".srt"
+                                }
+                                val filename = name + if (name.lowercase().endsWith(ext)) "" else ext
+                                url += "#" + mController.encodeUrl(filename)
+                            }
+                            playSubtitle = url
+                        } catch (th: Throwable) {}
+                    }
+                    subtitleCacheKey = info.optString("subtKey", null)
+                    val playUrl = info.optString("playUrl", "")
+                    val msg = info.optString("msg", "")
+                    if (msg.isNotEmpty()) {
+                        Toast.makeText(mContext, msg, Toast.LENGTH_SHORT).show()
+                    }
+                    val flag = info.optString("flag")
+                    var url = info.getString("url")
+                    if (url.startsWith("[")) {
+                        url = mController.firstUrlByArray(url)
+                    }
+                    var headers: HashMap<String, String>? = null
+                    webUserAgent = null
+                    webHeaderMap = null
+                    if (info.has("header")) {
+                        try {
+                            val hds = JSONObject(info.getString("header"))
+                            val keys = hds.keys()
+                            while (keys.hasNext()) {
+                                val key = keys.next()
+                                if (headers == null) headers = HashMap()
+                                headers!![key] = hds.getString(key)
+                                if (key.equals("user-agent", ignoreCase = true)) {
+                                    webUserAgent = hds.getString(key).trim()
+                                }
+                            }
+                            webHeaderMap = headers
+                        } catch (th: Throwable) {}
+                    }
+                    if (parse || jx) {
+                        val userJxList = (playUrl.isEmpty() && ApiConfig.get().vipParseFlags.contains(flag)) || jx
+                        initParse(flag, userJxList, playUrl, url)
+                    } else {
+                        mController.showParse(false)
+                        playUrl(playUrl + url, headers)
+                    }
+                } catch (th: Throwable) {}
+            } else {
+                errorWithRetry("获取播放信息错误", true)
+            }
+        }
+    }
+
+    fun setData(bundle: Bundle) {
+        mVodInfo = App.getInstance().vodInfo
+        sourceKey = bundle.getString("sourceKey") ?: ""
+        sourceBean = ApiConfig.get().getSource(sourceKey)
+        initPlayerCfg()
+        play(false)
+    }
+
+    private fun initData() {}
+
+    private fun initPlayerCfg() {
+        try {
+            mVodPlayerCfg = JSONObject(mVodInfo?.playerCfg)
+        } catch (th: Throwable) {
+            mVodPlayerCfg = JSONObject()
+        }
+        try {
+            if (mVodPlayerCfg?.has("pl") == false) {
+                mVodPlayerCfg?.put("pl", if (sourceBean?.playerType == -1) Hawk.get(HawkConfig.PLAY_TYPE, 1) else sourceBean?.playerType ?: 0)
+            }
+            if (mVodPlayerCfg?.has("pr") == false) mVodPlayerCfg?.put("pr", Hawk.get(HawkConfig.PLAY_RENDER, 0))
+            if (mVodPlayerCfg?.has("ijk") == false) mVodPlayerCfg?.put("ijk", Hawk.get(HawkConfig.IJK_CODEC, "硬解码"))
+            if (mVodPlayerCfg?.has("sc") == false) mVodPlayerCfg?.put("sc", Hawk.get(HawkConfig.PLAY_SCALE, 0))
+            if (mVodPlayerCfg?.has("sp") == false) mVodPlayerCfg?.put("sp", 1.0f)
+            if (mVodPlayerCfg?.has("st") == false) mVodPlayerCfg?.put("st", 0)
+            if (mVodPlayerCfg?.has("et") == false) mVodPlayerCfg?.put("et", 0)
+        } catch (th: Throwable) {}
+        mVodPlayerCfg?.let { mController.setPlayerConfig(it) }
+    }
+
+    fun onBackPressed(): Boolean {
+        val requestedOrientation = requireActivity().requestedOrientation
+        if (requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_PORTRAIT ||
+            requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT ||
+            requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT) {
+            requireActivity().requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            mController.mLandscapePortraitBtn.text = "竖屏"
+        }
+        return mController.onBackPressed()
+    }
+
+    fun dispatchKeyEvent(event: KeyEvent?): Boolean = event?.let { mController.onKeyEvent(it) } ?: false
+    fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean = event?.let { mController.onKeyDown(keyCode, it) } ?: false
+    fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean = event?.let { mController.onKeyUp(keyCode, it) } ?: false
+
+    override fun onPause() {
+        super.onPause()
+        mVideoView?.pause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        mVideoView?.resume()
+    }
+
+    override fun onHiddenChanged(hidden: Boolean) {
+        if (hidden) mVideoView?.pause() else mVideoView?.resume()
+        super.onHiddenChanged(hidden)
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        EventBus.getDefault().unregister(this)
+        mVideoView?.let {
+            it.release()
+            mVideoView = null
+        }
+        stopLoadWebView(true)
+        stopParse()
+        mController.stopOther()
+    }
+
+    private var mVodInfo: VodInfo? = null
+    private var mVodPlayerCfg: JSONObject? = null
+    private var sourceKey: String = ""
+    private var sourceBean: SourceBean? = null
+
+    private fun playNext(isProgress: Boolean) {
+        val hasNext = mVodInfo?.let { vod ->
+            vod.seriesMap[vod.playFlag]?.let { (vod.playIndex + 1) < it.size } ?: false
+        } ?: false
+        if (!hasNext) {
+            Toast.makeText(requireContext(), "已经是最后一集了!", Toast.LENGTH_SHORT).show()
+            return
+        }
+        mVodInfo?.playIndex = mVodInfo?.playIndex?.plus(1) ?: 0
+        play(false)
+    }
+
+    private fun playPrevious() {
+        val hasPre = mVodInfo?.let { (it.playIndex - 1) >= 0 } ?: false
+        if (!hasPre) {
+            Toast.makeText(requireContext(), "已经是第一集了!", Toast.LENGTH_SHORT).show()
+            return
+        }
+        mVodInfo?.playIndex = mVodInfo?.playIndex?.minus(1) ?: 0
+        play(false)
+    }
+
+    private var autoRetryCount = 0
+    private var lastRetryTime = 0L
+    private var allowSwitchPlayer = true
+
+    private fun autoRetry(): Boolean {
+        val currentTime = System.currentTimeMillis()
+        if (currentTime - lastRetryTime > 60_000) {
+            LOG.i("echo-reset-autoRetryCount")
+            autoRetryCount = 0
+            allowSwitchPlayer = false
+        }
+        lastRetryTime = currentTime
+        if (!loadFoundVideoUrls.isNullOrEmpty()) {
+            autoRetryFromLoadFoundVideoUrls()
+            return true
+        }
+        if (autoRetryCount < 2) {
+            if (autoRetryCount == 1) {
+                play(false)
+                autoRetryCount++
+            } else {
+                if (!webPlayUrl.isNullOrEmpty()) {
+                    if (allowSwitchPlayer) {
+                        if (mController.switchPlayer()) autoRetryCount++
+                    } else {
+                        autoRetryCount++
+                        allowSwitchPlayer = true
+                    }
+                    stopParse()
+                    initParseLoadFound()
+                    mVideoView?.release()
+                    playUrl(webPlayUrl, webHeaderMap)
+                } else {
+                    play(false)
+                    autoRetryCount++
+                }
+            }
+            return true
+        }
+        autoRetryCount = 0
+        return false
+    }
+
+    private fun autoRetryFromLoadFoundVideoUrls() {
+        val videoUrl = loadFoundVideoUrls?.poll() ?: return
+        val header = loadFoundVideoUrlsHeader?.get(videoUrl)
+        playUrl(videoUrl, header)
+    }
+
+    private fun initParseLoadFound() {
+        loadFoundCount.set(0)
+        loadFoundVideoUrls = LinkedList()
+        loadFoundVideoUrlsHeader = HashMap()
+    }
+
+    fun setPlayTitle(show: Boolean) {
+        val playTitleInfo = if (show && mVodInfo != null) {
+            "${mVodInfo?.name} ${mVodInfo?.seriesMap?.get(mVodInfo?.playFlag)?.get(mVodInfo?.playIndex ?: 0)?.name}"
+        } else ""
+        mController.setTitle(playTitleInfo)
+    }
+
+    fun play(reset: Boolean) {
+        if (mVodInfo == null) return
+        val vs = mVodInfo?.seriesMap?.get(mVodInfo?.playFlag)?.get(mVodInfo?.playIndex ?: 0) ?: return
+        EventBus.getDefault().post(RefreshEvent(RefreshEvent.TYPE_REFRESH, mVodInfo?.playIndex ?: 0))
+        setTip("正在获取播放信息", true, false)
+        mController.setTitle("${mVodInfo?.name} ${vs.name}")
+
+        stopParse()
+        initParseLoadFound()
+        allowSwitchPlayer = true
+        mController.stopOther()
+        mVideoView?.release()
+        subtitleCacheKey = "${mVodInfo?.sourceKey}-${mVodInfo?.id}-${mVodInfo?.playFlag}-${mVodInfo?.playIndex}-${vs.name}-subt"
+        progressKey = "${mVodInfo?.sourceKey}${mVodInfo?.id}${mVodInfo?.playFlag}${mVodInfo?.playIndex}${vs.name}"
+        if (reset) {
+            CacheManager.delete(MD5.string2MD5(progressKey), 0)
+            CacheManager.delete(MD5.string2MD5(subtitleCacheKey), 0)
+        } else {
+            try {
+                val playerType = mVodPlayerCfg?.getInt("pl") ?: 0
+                mController.mSubtitleView.visibility = if (playerType == 1) View.VISIBLE else View.GONE
+            } catch (e: JSONException) { e.printStackTrace() }
+        }
+
+        if (Jianpian.isJpUrl(vs.url)) {
+            mController.showParse(false)
+            val decodedUrl = if (vs.url.startsWith("tvbox-xg:")) Jianpian.JPUrlDec(vs.url.substring(9)) else Jianpian.JPUrlDec(vs.url)
+            playUrl(decodedUrl, null)
+            return
+        }
+        if (Thunder.play(vs.url, object : Thunder.ThunderCallback {
+            override fun status(code: Int, info: String) { setTip(info, code >= 0, code < 0) }
+            override fun list(urlMap: Map<Int, String>) {}
+            override fun play(url: String) { playUrl(url, null) }
+        })) {
+            mController.showParse(false)
+            return
+        }
+        sourceViewModel?.getPlay(sourceKey, mVodInfo?.playFlag, progressKey, vs.url, subtitleCacheKey)
+    }
+
+    private var playSubtitle: String? = null
+    private var subtitleCacheKey: String? = null
+    private var progressKey: String? = null
+    private var parseFlag: String? = null
+    private var webUrl: String? = null
+    private var webUserAgent: String? = null
+    private var webHeaderMap: HashMap<String, String>? = null
+    private var webPlayUrl: String? = null
+
+    private fun initParse(flag: String, useParse: Boolean, playUrl: String, url: String) {
+        parseFlag = flag
+        webUrl = url
+        var parseBean: ParseBean? = null
+        mController.showParse(useParse)
+        if (useParse) {
+            parseBean = ApiConfig.get().defaultParse
+        } else {
+            when {
+                playUrl.startsWith("json:") -> parseBean = ParseBean().apply { type = 1; setUrl(playUrl.substring(5)) }
+                playUrl.startsWith("parse:") -> {
+                    for (pb in ApiConfig.get().parseBeanList) if (pb.name == playUrl.substring(6)) { parseBean = pb; break }
+                }
+            }
+            if (parseBean == null) parseBean = ParseBean().apply { type = 0; setUrl(playUrl) }
+        }
+        doParse(parseBean)
+    }
+
+    @Throws(JSONException::class)
+    private fun jsonParse(input: String, json: String): JSONObject? {
+        val jsonPlayData = JSONObject(json)
+        var url = if (jsonPlayData.has("data")) jsonPlayData.getJSONObject("data").getString("url") else jsonPlayData.getString("url")
+        if (url.startsWith("//")) url = "http:$url"
+        if (!url.startsWith("http")) return null
+        val headers = JSONObject()
+        jsonPlayData.optString("user-agent", "")?.takeIf { it.trim().isNotEmpty() }?.let { headers.put("User-Agent", " $it") }
+        jsonPlayData.optString("referer", "")?.takeIf { it.trim().isNotEmpty() }?.let { headers.put("Referer", " $it") }
+        return JSONObject().apply { put("header", headers); put("url", url) }
+    }
+
+    private fun stopParse() {
+        mHandler?.removeMessages(100)
+        stopLoadWebView(false)
+        OkGo.getInstance().cancelTag("json_jx")
+        parseThreadPool?.let {
+            try { it.shutdown(); parseThreadPool = null } catch (th: Throwable) { th.printStackTrace() }
+        }
+    }
+
+    private var parseThreadPool: ExecutorService? = null
+
+    private fun doParse(pb: ParseBean) {
+        stopParse()
+        initParseLoadFound()
+        when (pb.type) {
+            4 -> parseMix(pb, true)
+            0 -> {
+                setTip("正在嗅探播放地址", true, false)
+                mHandler?.removeMessages(100)
+                mHandler?.sendEmptyMessageDelayed(100, 20 * 1000)
+                pb.ext?.let { ext ->
+                    try {
+                        val reqHeaders = HashMap<String, String>()
+                        val jsonObject = JSONObject(ext)
+                        if (jsonObject.has("header")) {
+                            val headerJson = jsonObject.optJSONObject("header")
+                            headerJson?.keys()?.forEach { key ->
+                                if (key.equals("user-agent", ignoreCase = true)) webUserAgent = headerJson.getString(key).trim()
+                                else reqHeaders[key] = headerJson.optString(key, "")
+                            }
+                            if (reqHeaders.isNotEmpty()) webHeaderMap = reqHeaders
+                        }
+                    } catch (e: Throwable) { e.printStackTrace() }
+                }
+                loadWebView(pb.url + webUrl)
+            }
+            1 -> {
+                setTip("正在解析播放地址", true, false)
+                val reqHeaders = HttpHeaders()
+                try {
+                    JSONObject(pb.ext ?: "").optJSONObject("header")?.keys()?.forEach { key ->
+                        reqHeaders.put(key, JSONObject(pb.ext ?: "").optJSONObject("header")?.optString(key, "") ?: "")
+                    }
+                } catch (e: Throwable) { e.printStackTrace() }
+                OkGo.get<String>(pb.url + mController.encodeUrl(webUrl))
+                    .tag("json_jx").headers(reqHeaders)
+                    .execute(object : AbsCallback<String>() {
+                        override fun convertResponse(response: okhttp3.Response) = response.body?.string() ?: throw IllegalStateException("网络请求错误")
+                        override fun onSuccess(response: Response<String>) {
+                            try {
+                                val rs = jsonParse(webUrl ?: "", response.body())
+                                var headers: HashMap<String, String>? = null
+                                rs?.optJSONObject("header")?.keys()?.forEach { key ->
+                                    if (headers == null) headers = HashMap()
+                                    headers!![key] = rs.getJSONObject("header").getString(key)
+                                }
+                                rs?.let { playUrl(it.getString("url"), headers) }
+                            } catch (e: Throwable) { errorWithRetry("解析错误", false) }
+                        }
+                        override fun onError(response: Response<String>) { super.onError(response); errorWithRetry("解析错误", false) }
+                    })
+            }
+            2 -> {
+                setTip("正在解析播放地址", true, false)
+                parseThreadPool = Executors.newSingleThreadExecutor()
+                val jxs = LinkedHashMap<String, String>()
+                ApiConfig.get().parseBeanList.filter { it.type == 1 }.forEach { jxs[it.name] = it.mixUrl() }
+                parseThreadPool?.execute {
+                    val rs = ApiConfig.get().jsonExt(pb.url, jxs, webUrl)
+                    if (rs == null || !rs.has("url") || rs.optString("url").isEmpty()) setTip("解析错误", false, true)
+                    else {
+                        var headers: HashMap<String, String>? = null
+                        rs.optJSONObject("header")?.keys()?.forEach { key ->
+                            if (headers == null) headers = HashMap()
+                            headers!![key] = rs.getJSONObject("header").getString(key)
+                        }
+                        if (rs.has("jxFrom") && isAdded) requireActivity().runOnUiThread {
+                            Toast.makeText(mContext, "解析来自:" + rs.optString("jxFrom"), Toast.LENGTH_SHORT).show()
+                        }
+                        if (rs.optInt("parse", 0) == 1) loadUrl(DefaultConfig.checkReplaceProxy(rs.optString("url", "")))
+                        else playUrl(rs.optString("url", ""), headers)
+                    }
+                }
+            }
+            3 -> parseMix(pb, false)
+        }
+    }
+
+    private fun parseMix(pb: ParseBean, isSuper: Boolean) {
+        setTip("正在解析播放地址", true, false)
+        parseThreadPool = Executors.newSingleThreadExecutor()
+        val jxs = LinkedHashMap<String, HashMap<String, String>>()
+        val jsonJxs = LinkedHashMap<String, String>()
+        var extendName = ""
+        ApiConfig.get().parseBeanList.forEach { p ->
+            val data = HashMap<String, String>().apply {
+                put("url", p.url); put("type", p.type.toString()); put("ext", p.ext ?: "")
+            }
+            if (p.url == pb.url) extendName = p.name
+            jxs[p.name] = data
+            if (p.type == 1) jsonJxs[p.name] = p.mixUrl()
+        }
+        val finalExtendName = extendName
+        parseThreadPool?.execute {
+            if (isSuper) {
+                val rs = SuperParse.parse(jxs, parseFlag + "123", webUrl)
+                if (!rs.has("url") || rs.optString("url").isEmpty()) setTip("解析错误", false, true)
+                else if (rs.has("parse") && rs.optInt("parse", 0) == 1) {
+                    if (rs.has("ua")) webUserAgent = rs.optString("ua").trim()
+                    setTip("超级解析中", true, false)
+                    if (isAdded) requireActivity().runOnUiThread {
+                        stopParse(); mHandler?.removeMessages(100); mHandler?.sendEmptyMessageDelayed(100, 20 * 1000)
+                        loadWebView(DefaultConfig.checkReplaceProxy(rs.optString("url", "")))
+                    }
+                    parseThreadPool?.execute { rsJsonJX(SuperParse.doJsonJx(webUrl), true) }
+                } else rsJsonJX(rs, false)
+            } else {
+                val rs = ApiConfig.get().jsonExtMix(parseFlag + "111", pb.url, finalExtendName, jxs, webUrl)
+                if (rs == null || !rs.has("url") || rs.optString("url").isEmpty()) setTip("解析错误", false, true)
+                else if (rs.has("parse") && rs.optInt("parse", 0) == 1) {
+                    if (rs.has("ua")) webUserAgent = rs.optString("ua").trim()
+                    if (isAdded) requireActivity().runOnUiThread {
+                        stopParse(); setTip("正在嗅探播放地址", true, false)
+                        mHandler?.removeMessages(100); mHandler?.sendEmptyMessageDelayed(100, 20 * 1000)
+                        loadWebView(DefaultConfig.checkReplaceProxy(rs.optString("url", "")))
+                    }
+                } else rsJsonJX(rs, false)
+            }
+        }
+    }
+
+    private fun rsJsonJX(rs: JSONObject?, isSuper: Boolean) {
+        if (isSuper && (rs == null || !rs.has("url"))) return
+        if (isSuper) stopLoadWebView(false)
+        var headers: HashMap<String, String>? = null
+        rs?.optJSONObject("header")?.keys()?.forEach { key ->
+            if (headers == null) headers = HashMap()
+            headers!![key] = rs.getJSONObject("header").getString(key)
+        }
+        if (rs?.has("jxFrom") == true && isAdded) requireActivity().runOnUiThread {
+            Toast.makeText(mContext, "解析来自:" + rs.optString("jxFrom"), Toast.LENGTH_SHORT).show()
+        }
+        rs?.let { playUrl(it.optString("url", ""), headers) }
+    }
+
+    fun getPlayer(): MyVideoView? = mVideoView
+
+    private var mXwalkWebView: XWalkView? = null
+    private var mSysWebView: WebView? = null
+    private val loadedUrls = HashMap<String, Boolean>()
+    private var loadFoundVideoUrls: LinkedList<String>? = null
+    private var loadFoundVideoUrlsHeader: HashMap<String, HashMap<String, String>>? = null
+    private val loadFoundCount = AtomicInteger(0)
+
+    private fun loadWebView(url: String) {
+        if (mSysWebView == null && mXwalkWebView == null) {
+            if (!Hawk.get(HawkConfig.PARSE_WEBVIEW, true)) {
+                XWalkUtils.tryUseXWalk(mContext, object : XWalkUtils.XWalkState {
+                    override fun success() { initWebView(false); loadUrl(url) }
+                    override fun fail() { Toast.makeText(mContext, "XWalkView不兼容，已替换为系统自带WebView", Toast.LENGTH_SHORT).show(); initWebView(true); loadUrl(url) }
+                    override fun ignore() { Toast.makeText(mContext, "XWalkView运行组件未下载，已替换为系统自带WebView", Toast.LENGTH_SHORT).show(); initWebView(true); loadUrl(url) }
+                })
+            } else { initWebView(true); loadUrl(url) }
+        } else loadUrl(url)
+    }
+
+    private fun initWebView(useSystemWebView: Boolean) {
+        if (useSystemWebView) { mSysWebView = MyWebView(mContext); configWebViewSys(mSysWebView!!) }
+        else { mXwalkWebView = MyXWalkView(mContext); configWebViewX5(mXwalkWebView!!) }
+    }
+
+    private fun loadUrl(url: String) {
+        if (!isAdded) return
+        requireActivity().runOnUiThread {
+            mXwalkWebView?.let { it.stopLoading(); webUserAgent?.let { ua -> it.settings.userAgentString = ua }; if (webHeaderMap != null) it.loadUrl(url, webHeaderMap) else it.loadUrl(url) }
+            mSysWebView?.let { it.stopLoading(); webUserAgent?.let { ua -> it.settings.userAgentString = ua }; if (webHeaderMap != null) it.loadUrl(url, webHeaderMap) else it.loadUrl(url) }
+        }
+    }
+
+    private fun stopLoadWebView(destroy: Boolean) {
+        if (mActivity == null || !isAdded) return
+        requireActivity().runOnUiThread {
+            mXwalkWebView?.let { it.stopLoading(); it.loadUrl("about:blank"); if (destroy) { it.clearCache(true); it.removeAllViews(); it.onDestroy(); mXwalkWebView = null } }
+            mSysWebView?.let { it.stopLoading(); it.loadUrl("about:blank"); if (destroy) { it.clearCache(true); it.removeAllViews(); it.destroy(); mSysWebView = null } }
+        }
+    }
+
+    private fun checkVideoFormat(url: String): Boolean = try {
+        if (url.contains("url=http") || url.contains(".html")) false
+        else if (sourceBean?.type == 3) ApiConfig.get().getCSP(sourceBean)?.takeIf { it.manualVideoCheck() }?.isVideoFormat(url) ?: VideoParseRuler.checkIsVideoForParse(webUrl, url)
+        else VideoParseRuler.checkIsVideoForParse(webUrl, url)
+    } catch (e: Exception) { false }
+
+    internal inner class MyWebView(context: android.content.Context) : WebView(context) {
+        override fun setOverScrollMode(mode: Int) { super.setOverScrollMode(mode); if (mContext is Activity) AutoSize.autoConvertDensityOfCustomAdapt(mContext as Activity, this@PlayFragment) }
+        override fun dispatchKeyEvent(event: KeyEvent) = false
+    }
+
+    internal inner class MyXWalkView(context: android.content.Context) : XWalkView(context) {
+        override fun setOverScrollMode(mode: Int) { super.setOverScrollMode(mode); if (mContext is Activity) AutoSize.autoConvertDensityOfCustomAdapt(mContext as Activity, this@PlayFragment) }
+        override fun dispatchKeyEvent(event: KeyEvent) = false
+    }

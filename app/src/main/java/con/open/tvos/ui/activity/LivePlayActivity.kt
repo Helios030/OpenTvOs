@@ -1278,3 +1278,712 @@ class LivePlayActivity : BaseActivity() {
             playNextSource()
         }
     }
+
+    private fun initChannelGroupView() {
+        mChannelGroupView?.setHasFixedSize(true)
+        mChannelGroupView?.setLayoutManager(V7LinearLayoutManager(this, 1, false))
+
+        liveChannelGroupAdapter = LiveChannelGroupAdapter()
+        mChannelGroupView?.adapter = liveChannelGroupAdapter
+        mChannelGroupView?.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                super.onScrollStateChanged(recyclerView, newState)
+                mHandler.removeCallbacks(mHideChannelListRun)
+                mHandler.postDelayed(mHideChannelListRun, postTimeout.toLong())
+            }
+        })
+
+        mChannelGroupView?.setOnItemListener(object : TvRecyclerView.OnItemListener {
+            override fun onItemPreSelected(parent: TvRecyclerView?, itemView: View?, position: Int) {}
+            override fun onItemSelected(parent: TvRecyclerView?, itemView: View?, position: Int) {
+                selectChannelGroup(position, true, -1)
+            }
+            override fun onItemClick(parent: TvRecyclerView?, itemView: View?, position: Int) {
+                if (isNeedInputPassword(position)) {
+                    showPasswordDialog(position, -1)
+                }
+            }
+        })
+
+        liveChannelGroupAdapter?.setOnItemClickListener { adapter, view, position ->
+            FastClickCheckUtil.check(view)
+            selectChannelGroup(position, false, -1)
+        }
+    }
+
+    private fun selectChannelGroup(groupIndex: Int, focus: Boolean, liveChannelIndex: Int) {
+        mLastChannelGroupIndex = groupIndex
+        if (focus) {
+            liveChannelGroupAdapter?.setFocusedGroupIndex(groupIndex)
+            liveChannelItemAdapter?.setFocusedChannelIndex(-1)
+        }
+        if ((groupIndex > -1 && groupIndex != liveChannelGroupAdapter!!.getSelectedGroupIndex()) || isNeedInputPassword(groupIndex)) {
+            liveChannelGroupAdapter?.setSelectedGroupIndex(groupIndex)
+            if (isNeedInputPassword(groupIndex)) {
+                showPasswordDialog(groupIndex, liveChannelIndex)
+                return
+            }
+            loadChannelGroupDataAndPlay(groupIndex, liveChannelIndex)
+        }
+        if (tvLeftChannelListLayout?.visibility == View.VISIBLE) {
+            mHandler.removeCallbacks(mHideChannelListRun)
+            mHandler.postDelayed(mHideChannelListRun, postTimeout.toLong())
+        }
+    }
+
+    private fun initLiveChannelView() {
+        mLiveChannelView?.setHasFixedSize(true)
+        mLiveChannelView?.setLayoutManager(V7LinearLayoutManager(this, 1, false))
+
+        liveChannelItemAdapter = LiveChannelItemAdapter()
+        mLiveChannelView?.adapter = liveChannelItemAdapter
+        mLiveChannelView?.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                super.onScrollStateChanged(recyclerView, newState)
+                mHandler.removeCallbacks(mHideChannelListRun)
+                mHandler.postDelayed(mHideChannelListRun, postTimeout.toLong())
+            }
+        })
+
+        mLiveChannelView?.setOnItemListener(object : TvRecyclerView.OnItemListener {
+            override fun onItemPreSelected(parent: TvRecyclerView?, itemView: View?, position: Int) {}
+            override fun onItemSelected(parent: TvRecyclerView?, itemView: View?, position: Int) {
+                if (position < 0) return
+                liveChannelGroupAdapter?.setFocusedGroupIndex(-1)
+                liveChannelItemAdapter?.setFocusedChannelIndex(position)
+            }
+            override fun onItemClick(parent: TvRecyclerView?, itemView: View?, position: Int) {
+                clickLiveChannel(position)
+            }
+        })
+
+        liveChannelItemAdapter?.setOnItemClickListener { adapter, view, position ->
+            FastClickCheckUtil.check(view)
+            liveChannelItemAdapter?.setSelectedChannelIndex(position)
+            clickLiveChannel(position)
+        }
+    }
+
+    private fun clickLiveChannel(position: Int) {
+        if (tvLeftChannelListLayout?.visibility == View.VISIBLE) {
+            mHandler.removeCallbacks(mHideChannelListRun)
+            mHandler.postDelayed(mHideChannelListRun, postTimeout.toLong())
+        }
+        playChannel(liveChannelGroupAdapter!!.getSelectedGroupIndex(), position, false)
+    }
+
+    private fun initSettingGroupView() {
+        mSettingGroupView?.setHasFixedSize(true)
+        mSettingGroupView?.setLayoutManager(V7LinearLayoutManager(this, 1, false))
+
+        liveSettingGroupAdapter = LiveSettingGroupAdapter()
+        mSettingGroupView?.adapter = liveSettingGroupAdapter
+        mSettingGroupView?.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                super.onScrollStateChanged(recyclerView, newState)
+                mHandler.removeCallbacks(mHideSettingLayoutRun)
+                mHandler.postDelayed(mHideSettingLayoutRun, postTimeout.toLong())
+            }
+        })
+
+        mSettingGroupView?.setOnItemListener(object : TvRecyclerView.OnItemListener {
+            override fun onItemPreSelected(parent: TvRecyclerView?, itemView: View?, position: Int) {}
+            override fun onItemSelected(parent: TvRecyclerView?, itemView: View?, position: Int) {
+                selectSettingGroup(position, true)
+            }
+            override fun onItemClick(parent: TvRecyclerView?, itemView: View?, position: Int) {}
+        })
+
+        liveSettingGroupAdapter?.setOnItemClickListener { adapter, view, position ->
+            FastClickCheckUtil.check(view)
+            selectSettingGroup(position, false)
+        }
+    }
+
+    private fun selectSettingGroup(position: Int, focus: Boolean) {
+        if (!isCurrentLiveChannelValid()) return
+        if (focus) {
+            liveSettingGroupAdapter?.setFocusedGroupIndex(position)
+            liveSettingItemAdapter?.setFocusedItemIndex(-1)
+        }
+        if (position == liveSettingGroupAdapter!!.getSelectedGroupIndex() || position < -1) return
+
+        liveSettingGroupAdapter?.setSelectedGroupIndex(position)
+        liveSettingItemAdapter?.setNewData(liveSettingGroupList[position].getLiveSettingItems())
+
+        when (position) {
+            0 -> liveSettingItemAdapter?.selectItem(currentLiveChannelItem!!.getSourceIndex(), true, false)
+            1 -> liveSettingItemAdapter?.selectItem(livePlayerManager.getLivePlayerScale(), true, true)
+            2 -> liveSettingItemAdapter?.selectItem(livePlayerManager.getLivePlayerType(), true, true)
+        }
+        var scrollToPosition = liveSettingItemAdapter!!.getSelectedItemIndex()
+        if (scrollToPosition < 0) scrollToPosition = 0
+        mSettingItemView?.scrollToPosition(scrollToPosition)
+        mHandler.removeCallbacks(mHideSettingLayoutRun)
+        mHandler.postDelayed(mHideSettingLayoutRun, postTimeout.toLong())
+    }
+
+    private fun initSettingItemView() {
+        mSettingItemView?.setHasFixedSize(true)
+        mSettingItemView?.setLayoutManager(V7LinearLayoutManager(this, 1, false))
+
+        liveSettingItemAdapter = LiveSettingItemAdapter()
+        mSettingItemView?.adapter = liveSettingItemAdapter
+        mSettingItemView?.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                super.onScrollStateChanged(recyclerView, newState)
+                mHandler.removeCallbacks(mHideSettingLayoutRun)
+                mHandler.postDelayed(mHideSettingLayoutRun, postTimeout.toLong())
+            }
+        })
+
+        mSettingItemView?.setOnItemListener(object : TvRecyclerView.OnItemListener {
+            override fun onItemPreSelected(parent: TvRecyclerView?, itemView: View?, position: Int) {}
+            override fun onItemSelected(parent: TvRecyclerView?, itemView: View?, position: Int) {
+                if (position < 0) return
+                liveSettingGroupAdapter?.setFocusedGroupIndex(-1)
+                liveSettingItemAdapter?.setFocusedItemIndex(position)
+                mHandler.removeCallbacks(mHideSettingLayoutRun)
+                mHandler.postDelayed(mHideSettingLayoutRun, postTimeout.toLong())
+            }
+            override fun onItemClick(parent: TvRecyclerView?, itemView: View?, position: Int) {
+                clickSettingItem(position)
+            }
+        })
+
+        liveSettingItemAdapter?.setOnItemClickListener { adapter, view, position ->
+            FastClickCheckUtil.check(view)
+            clickSettingItem(position)
+        }
+    }
+
+    private fun clickSettingItem(position: Int) {
+        val settingGroupIndex = liveSettingGroupAdapter!!.getSelectedGroupIndex()
+        if (settingGroupIndex < 4) {
+            if (position == liveSettingItemAdapter!!.getSelectedItemIndex()) return
+            liveSettingItemAdapter?.selectItem(position, true, true)
+        }
+        when (settingGroupIndex) {
+            0 -> {
+                currentLiveChannelItem?.setSourceIndex(position)
+                playChannel(currentChannelGroupIndex, currentLiveChannelIndex, true)
+            }
+            1 -> livePlayerManager.changeLivePlayerScale(mVideoView, position, currentLiveChannelItem!!.getChannelName())
+            2 -> {
+                mVideoView?.release()
+                livePlayerManager.changeLivePlayerType(mVideoView, position, currentLiveChannelItem!!.getChannelName())
+                mVideoView?.setUrl(currentLiveChannelItem!!.getUrl(), liveWebHeader())
+                mVideoView?.start()
+            }
+            3 -> Hawk.put(HawkConfig.LIVE_CONNECT_TIMEOUT, position)
+            4 -> {
+                var select = false
+                when (position) {
+                    0 -> {
+                        select = !Hawk.get(HawkConfig.LIVE_SHOW_TIME, false)
+                        Hawk.put(HawkConfig.LIVE_SHOW_TIME, select)
+                        showTime()
+                    }
+                    1 -> {
+                        select = !Hawk.get(HawkConfig.LIVE_SHOW_NET_SPEED, false)
+                        Hawk.put(HawkConfig.LIVE_SHOW_NET_SPEED, select)
+                        showNetSpeed()
+                    }
+                    2 -> {
+                        select = !Hawk.get(HawkConfig.LIVE_CHANNEL_REVERSE, false)
+                        Hawk.put(HawkConfig.LIVE_CHANNEL_REVERSE, select)
+                    }
+                    3 -> {
+                        select = !Hawk.get(HawkConfig.LIVE_CROSS_GROUP, false)
+                        Hawk.put(HawkConfig.LIVE_CROSS_GROUP, select)
+                    }
+                }
+                liveSettingItemAdapter?.selectItem(position, select, false)
+            }
+            5 -> {
+                if (mVideoView != null) {
+                    mVideoView?.release()
+                    mVideoView = null
+                }
+                if (position == Hawk.get(HawkConfig.LIVE_GROUP_INDEX, 0)) return
+                val liveGroups: JsonArray = Hawk.get(HawkConfig.LIVE_GROUP_LIST, JsonArray())
+                val livesOBJ = liveGroups[position].asJsonObject
+                liveSettingItemAdapter?.selectItem(position, true, true)
+                Hawk.put(HawkConfig.LIVE_GROUP_INDEX, position)
+                ApiConfig.get().loadLiveApi(livesOBJ)
+                recreate()
+                return
+            }
+        }
+        mHandler.removeCallbacks(mHideSettingLayoutRun)
+        mHandler.postDelayed(mHideSettingLayoutRun, postTimeout.toLong())
+    }
+
+    private fun initLiveChannelList() {
+        val list = ApiConfig.get().getChannelGroupList()
+        if (list.isEmpty()) {
+            setDefaultLiveChannelList()
+            return
+        }
+        initLiveObj()
+        if (list.size == 1 && list[0].getGroupName().startsWith("http://127.0.0.1")) {
+            loadProxyLives(list[0].getGroupName())
+        } else {
+            liveChannelGroupList.clear()
+            liveChannelGroupList.addAll(list)
+            showSuccess()
+            initLiveState()
+        }
+    }
+
+    private fun loadProxyLives(url: String) {
+        var urlVar = url
+        try {
+            val parsedUrl = Uri.parse(urlVar)
+            urlVar = String(Base64.decode(parsedUrl.getQueryParameter("ext"), Base64.DEFAULT or Base64.URL_SAFE or Base64.NO_WRAP), Charsets.UTF_8)
+        } catch (th: Throwable) {
+            if (!urlVar.startsWith("http://127.0.0.1")) {
+                setDefaultLiveChannelList()
+                return
+            }
+        }
+        showLoading()
+
+        LOG.i("echo-live-url:$urlVar")
+
+        if (urlVar.contains(".py")) {
+            if (!hasPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
+                Toast.makeText(App.getInstance(), "该源需要存储权限", Toast.LENGTH_SHORT).show()
+                setDefaultLiveChannelList()
+                return
+            }
+            val finalUrl = urlVar
+            val waitResponse = Runnable {
+                val executor = Executors.newSingleThreadExecutor()
+                val future = executor.submit(Callable<String> {
+                    LOG.i("echo--loadProxyLives-json--")
+                    val sp = ApiConfig.get().getPyCSP(finalUrl)
+                    val json = sp.liveContent(finalUrl)
+                    LOG.i("echo--loadProxyLives-json--$json")
+                    json
+                })
+                var sortJson: String? = null
+                try {
+                    sortJson = future.get(10, TimeUnit.SECONDS)
+                } catch (e: TimeoutException) {
+                    e.printStackTrace()
+                    future.cancel(true)
+                } catch (e: InterruptedException) {
+                    e.printStackTrace()
+                } catch (e: ExecutionException) {
+                    e.printStackTrace()
+                } finally {
+                    if (sortJson.isNullOrEmpty()) {
+                        mHandler.post { setDefaultLiveChannelList() }
+                        return@Runnable
+                    }
+                    val linkedHashMap = LinkedHashMap<String, LinkedHashMap<String, ArrayList<String>>>()
+                    TxtSubscribe.parse(linkedHashMap, sortJson)
+                    val livesArray = TxtSubscribe.live2JsonArray(linkedHashMap)
+
+                    ApiConfig.get().loadLives(livesArray)
+                    val list = ApiConfig.get().getChannelGroupList()
+                    if (list.isEmpty()) {
+                        mHandler.post { setDefaultLiveChannelList() }
+                        return@Runnable
+                    }
+                    liveChannelGroupList.clear()
+                    liveChannelGroupList.addAll(list)
+
+                    mHandler.post {
+                        this@LivePlayActivity.showSuccess()
+                        initLiveState()
+                    }
+                    try {
+                        executor.shutdown()
+                    } catch (th: Throwable) {
+                        th.printStackTrace()
+                    }
+                }
+            }
+            Executors.newSingleThreadExecutor().execute(waitResponse)
+        } else {
+            OkGo.get<String>(urlVar).execute(object : AbsCallback<String> {
+                override fun convertResponse(response: okhttp3.Response): String? {
+                    return response.body?.string()
+                }
+
+                override fun onSuccess(response: Response<String>) {
+                    val linkedHashMap = LinkedHashMap<String, LinkedHashMap<String, ArrayList<String>>>()
+                    TxtSubscribe.parse(linkedHashMap, response.body())
+                    val livesArray = TxtSubscribe.live2JsonArray(linkedHashMap)
+
+                    ApiConfig.get().loadLives(livesArray)
+                    val list = ApiConfig.get().getChannelGroupList()
+                    if (list.isEmpty()) {
+                        mHandler.post { setDefaultLiveChannelList() }
+                        return
+                    }
+                    liveChannelGroupList.clear()
+                    liveChannelGroupList.addAll(list)
+
+                    mHandler.post {
+                        this@LivePlayActivity.showSuccess()
+                        initLiveState()
+                    }
+                }
+
+                override fun onError(response: Response<String>) {
+                    mHandler.post { setDefaultLiveChannelList() }
+                }
+            })
+        }
+    }
+
+    private fun initLiveState() {
+        val lastChannelName = Hawk.get(HawkConfig.LIVE_CHANNEL, "")
+
+        var lastChannelGroupIndex = -1
+        var lastLiveChannelIndex = -1
+        for (liveChannelGroup in liveChannelGroupList) {
+            for (liveChannelItem in liveChannelGroup.getLiveChannels()) {
+                if (liveChannelItem.getChannelName() == lastChannelName) {
+                    lastChannelGroupIndex = liveChannelGroup.getGroupIndex()
+                    lastLiveChannelIndex = liveChannelItem.getChannelIndex()
+                    break
+                }
+            }
+            if (lastChannelGroupIndex != -1) break
+        }
+        if (lastChannelGroupIndex == -1) {
+            lastChannelGroupIndex = getFirstNoPasswordChannelGroup()
+            if (lastChannelGroupIndex == -1) lastChannelGroupIndex = 0
+            lastLiveChannelIndex = 0
+        }
+
+        livePlayerManager.init(mVideoView)
+        showTime()
+        showNetSpeed()
+        tvLeftChannelListLayout?.visibility = View.INVISIBLE
+        tvRightSettingLayout?.visibility = View.INVISIBLE
+
+        liveChannelGroupAdapter?.setNewData(liveChannelGroupList)
+        selectChannelGroup(lastChannelGroupIndex, false, lastLiveChannelIndex)
+    }
+
+    private fun isListOrSettingLayoutVisible(): Boolean {
+        return tvLeftChannelListLayout?.visibility == View.VISIBLE || tvRightSettingLayout?.visibility == View.VISIBLE
+    }
+
+    private fun initLiveSettingGroupList() {
+        liveSettingGroupList = ApiConfig.get().getLiveSettingGroupList()
+        liveSettingGroupList[3].getLiveSettingItems()[Hawk.get(HawkConfig.LIVE_CONNECT_TIMEOUT, 1)].setItemSelected(true)
+        liveSettingGroupList[4].getLiveSettingItems()[0].setItemSelected(Hawk.get(HawkConfig.LIVE_SHOW_TIME, false))
+        liveSettingGroupList[4].getLiveSettingItems()[1].setItemSelected(Hawk.get(HawkConfig.LIVE_SHOW_NET_SPEED, false))
+        liveSettingGroupList[4].getLiveSettingItems()[2].setItemSelected(Hawk.get(HawkConfig.LIVE_CHANNEL_REVERSE, false))
+        liveSettingGroupList[4].getLiveSettingItems()[3].setItemSelected(Hawk.get(HawkConfig.LIVE_CROSS_GROUP, false))
+        liveSettingGroupList[5].getLiveSettingItems()[Hawk.get(HawkConfig.LIVE_GROUP_INDEX, 0)].setItemSelected(true)
+    }
+
+    private fun loadCurrentSourceList() {
+        val currentSourceNames = currentLiveChannelItem!!.getChannelSourceNames()
+        val liveSettingItemList = ArrayList<LiveSettingItem>()
+        for (j in currentSourceNames.indices) {
+            val liveSettingItem = LiveSettingItem()
+            liveSettingItem.setItemIndex(j)
+            liveSettingItem.setItemName(currentSourceNames[j])
+            liveSettingItemList.add(liveSettingItem)
+        }
+        liveSettingGroupList[0].setLiveSettingItems(liveSettingItemList)
+    }
+
+    private fun showTime() {
+        if (Hawk.get(HawkConfig.LIVE_SHOW_TIME, false)) {
+            mHandler.post(mUpdateTimeRun)
+            tvTime?.visibility = View.VISIBLE
+        } else {
+            mHandler.removeCallbacks(mUpdateTimeRun)
+            tvTime?.visibility = View.GONE
+        }
+    }
+
+    private val mUpdateTimeRun = Runnable {
+        val day = Date()
+        val df = SimpleDateFormat("hh:mm a")
+        tvTime?.text = df.format(day)
+        mHandler.postDelayed(this, 1000)
+    }
+
+    private fun showNetSpeed() {
+        if (Hawk.get(HawkConfig.LIVE_SHOW_NET_SPEED, false)) {
+            mHandler.post(mUpdateNetSpeedRun)
+            tvNetSpeed?.visibility = View.VISIBLE
+        } else {
+            mHandler.removeCallbacks(mUpdateNetSpeedRun)
+            tvNetSpeed?.visibility = View.GONE
+        }
+    }
+
+    private val mUpdateNetSpeedRun = Runnable {
+        if (mVideoView == null) return@Runnable
+        val speed = PlayerHelper.getDisplaySpeed(mVideoView!!.getTcpSpeed(), true)
+        tvNetSpeed?.text = speed
+        mHandler.postDelayed(this, 1000)
+    }
+
+    private fun showPasswordDialog(groupIndex: Int, liveChannelIndex: Int) {
+        if (tvLeftChannelListLayout?.visibility == View.VISIBLE)
+            mHandler.removeCallbacks(mHideChannelListRun)
+
+        val dialog = LivePasswordDialog(this)
+        dialog.setOnListener(object : LivePasswordDialog.OnListener {
+            override fun onChange(password: String) {
+                if (password == liveChannelGroupList[groupIndex].getGroupPassword()) {
+                    channelGroupPasswordConfirmed.add(groupIndex)
+                    loadChannelGroupDataAndPlay(groupIndex, liveChannelIndex)
+                } else {
+                    Toast.makeText(App.getInstance(), "密码错误", Toast.LENGTH_SHORT).show()
+                }
+
+                if (tvLeftChannelListLayout?.visibility == View.VISIBLE)
+                    mHandler.postDelayed(mHideChannelListRun, postTimeout.toLong())
+            }
+
+            override fun onCancel() {
+                if (tvLeftChannelListLayout?.visibility == View.VISIBLE) {
+                    val groupIndex = liveChannelGroupAdapter!!.getSelectedGroupIndex()
+                    liveChannelItemAdapter?.setNewData(getLiveChannels(groupIndex))
+                }
+            }
+        })
+        dialog.show()
+    }
+
+    private fun loadChannelGroupDataAndPlay(groupIndex: Int, liveChannelIndex: Int) {
+        liveChannelItemAdapter?.setNewData(getLiveChannels(groupIndex))
+        if (groupIndex == currentChannelGroupIndex) {
+            if (currentLiveChannelIndex > -1)
+                mLiveChannelView?.scrollToPosition(currentLiveChannelIndex)
+            liveChannelItemAdapter?.setSelectedChannelIndex(currentLiveChannelIndex)
+        } else {
+            mLiveChannelView?.scrollToPosition(0)
+            liveChannelItemAdapter?.setSelectedChannelIndex(-1)
+        }
+
+        if (liveChannelIndex > -1) {
+            clickLiveChannel(liveChannelIndex)
+            mChannelGroupView?.scrollToPosition(groupIndex)
+            mLiveChannelView?.scrollToPosition(liveChannelIndex)
+            playChannel(groupIndex, liveChannelIndex, false)
+        }
+    }
+
+    private fun isNeedInputPassword(groupIndex: Int): Boolean {
+        return liveChannelGroupList[groupIndex].getGroupPassword().isNotEmpty() && !isPasswordConfirmed(groupIndex)
+    }
+
+    private fun isPasswordConfirmed(groupIndex: Int): Boolean {
+        for (confirmedNum in channelGroupPasswordConfirmed) {
+            if (confirmedNum == groupIndex) return true
+        }
+        return false
+    }
+
+    private fun getLiveChannels(groupIndex: Int): ArrayList<LiveChannelItem> {
+        return if (!isNeedInputPassword(groupIndex)) {
+            liveChannelGroupList[groupIndex].getLiveChannels()
+        } else {
+            ArrayList()
+        }
+    }
+
+    private fun getNextChannel(direction: Int): Array<Int> {
+        var channelGroupIndex = currentChannelGroupIndex
+        var liveChannelIndex = currentLiveChannelIndex
+
+        if (direction > 0) {
+            liveChannelIndex++
+            if (liveChannelIndex >= getLiveChannels(channelGroupIndex).size) {
+                liveChannelIndex = 0
+                if (Hawk.get(HawkConfig.LIVE_CROSS_GROUP, false)) {
+                    do {
+                        channelGroupIndex++
+                        if (channelGroupIndex >= liveChannelGroupList.size) channelGroupIndex = 0
+                    } while (liveChannelGroupList[channelGroupIndex].getGroupPassword().isNotEmpty() || channelGroupIndex == currentChannelGroupIndex)
+                }
+            }
+        } else {
+            liveChannelIndex--
+            if (liveChannelIndex < 0) {
+                if (Hawk.get(HawkConfig.LIVE_CROSS_GROUP, false)) {
+                    do {
+                        channelGroupIndex--
+                        if (channelGroupIndex < 0) channelGroupIndex = liveChannelGroupList.size - 1
+                    } while (liveChannelGroupList[channelGroupIndex].getGroupPassword().isNotEmpty() || channelGroupIndex == currentChannelGroupIndex)
+                }
+                liveChannelIndex = getLiveChannels(channelGroupIndex).size - 1
+            }
+        }
+
+        return arrayOf(channelGroupIndex, liveChannelIndex)
+    }
+
+    private fun getFirstNoPasswordChannelGroup(): Int {
+        for (liveChannelGroup in liveChannelGroupList) {
+            if (liveChannelGroup.getGroupPassword().isEmpty()) return liveChannelGroup.getGroupIndex()
+        }
+        return -1
+    }
+
+    private fun isCurrentLiveChannelValid(): Boolean {
+        if (currentLiveChannelItem == null) {
+            Toast.makeText(App.getInstance(), "请先选择频道", Toast.LENGTH_SHORT).show()
+            return false
+        }
+        return true
+    }
+
+    private fun durationToString(duration: Int): String {
+        val dur = duration / 1000
+        val hour = dur / 3600
+        val min = (dur / 60) % 60
+        val sec = dur % 60
+        return when {
+            hour > 0 -> {
+                when {
+                    min > 9 && sec > 9 -> "$hour:$min:$sec"
+                    min > 9 -> "$hour:$min:0$sec"
+                    sec > 9 -> "$hour:0$min:$sec"
+                    else -> "$hour:0$min:0$sec"
+                }
+            }
+            else -> {
+                when {
+                    min > 9 && sec > 9 -> "$min:$sec"
+                    min > 9 -> "$min:0$sec"
+                    sec > 9 -> "0$min:$sec"
+                    else -> "0$min:0$sec"
+                }
+            }
+        }
+    }
+
+    fun showProgressBars(show: Boolean) {
+        sBar?.requestFocus()
+        if (show) {
+            ll_right_top_huikan?.visibility = View.VISIBLE
+            backcontroller?.visibility = View.VISIBLE
+            ll_epg?.visibility = View.GONE
+        } else {
+            backcontroller?.visibility = View.GONE
+            ll_right_top_huikan?.visibility = View.GONE
+            if (tip_epg1?.text?.toString() != "暂无信息") {
+                ll_epg?.visibility = View.VISIBLE
+            }
+        }
+
+        iv_play?.setOnClickListener {
+            mVideoView?.start()
+            iv_play?.visibility = View.INVISIBLE
+            countDownTimer?.start()
+            iv_playpause?.background = ContextCompat.getDrawable(this@LivePlayActivity.context!!, R.drawable.vod_pause)
+        }
+
+        iv_playpause?.setOnClickListener {
+            if (mVideoView!!.isPlaying()) {
+                mVideoView?.pause()
+                countDownTimer?.cancel()
+                iv_play?.visibility = View.VISIBLE
+                iv_playpause?.background = ContextCompat.getDrawable(this@LivePlayActivity.context!!, R.drawable.icon_play)
+            } else {
+                mVideoView?.start()
+                iv_play?.visibility = View.INVISIBLE
+                countDownTimer?.start()
+                iv_playpause?.background = ContextCompat.getDrawable(this@LivePlayActivity.context!!, R.drawable.vod_pause)
+            }
+        }
+
+        sBar?.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onStopTrackingTouch(seekBar: SeekBar) {}
+            override fun onStartTrackingTouch(seekBar: SeekBar) {}
+            override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
+                if (fromUser && countDownTimer != null) {
+                    mVideoView?.seekTo(progress.toLong())
+                    countDownTimer?.cancel()
+                    countDownTimer?.start()
+                }
+            }
+        })
+
+        sBar?.setOnKeyListener { _, keyCode, event ->
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+                    if (mVideoView!!.isPlaying()) {
+                        mVideoView?.pause()
+                        countDownTimer?.cancel()
+                        iv_play?.visibility = View.VISIBLE
+                        iv_playpause?.background = ContextCompat.getDrawable(this@LivePlayActivity.context!!, R.drawable.icon_play)
+                    } else {
+                        mVideoView?.start()
+                        iv_play?.visibility = View.INVISIBLE
+                        countDownTimer?.start()
+                        iv_playpause?.background = ContextCompat.getDrawable(this@LivePlayActivity.context!!, R.drawable.vod_pause)
+                    }
+                }
+            }
+            false
+        }
+
+        if (mVideoView!!.isPlaying()) {
+            iv_play?.visibility = View.INVISIBLE
+            iv_playpause?.background = ContextCompat.getDrawable(this@LivePlayActivity.context!!, R.drawable.vod_pause)
+        } else {
+            iv_play?.visibility = View.VISIBLE
+            iv_playpause?.background = ContextCompat.getDrawable(this@LivePlayActivity.context!!, R.drawable.icon_play)
+        }
+
+        if (countDownTimer3 == null) {
+            countDownTimer3 = object : CountDownTimer(postTimeout.toLong(), 1000) {
+                override fun onTick(arg0: Long) {
+                    if (mVideoView != null) {
+                        sBar?.progress = mVideoView?.currentPosition?.toInt() ?: 0
+                        tv_currentpos?.text = durationToString(mVideoView?.currentPosition?.toInt() ?: 0)
+                    }
+                }
+
+                override fun onFinish() {
+                    if (backcontroller?.visibility == View.VISIBLE) {
+                        backcontroller?.visibility = View.GONE
+                    }
+                }
+            }
+        } else {
+            countDownTimer3?.cancel()
+        }
+        countDownTimer3?.start()
+    }
+
+    private fun setDefaultLiveChannelList() {
+        liveChannelGroupList.clear()
+        val defaultGroup = LiveChannelGroup()
+        defaultGroup.setGroupIndex(0)
+        defaultGroup.setGroupName("default group")
+        defaultGroup.setGroupPassword("")
+        val defaultChannel = LiveChannelItem()
+        defaultChannel.setChannelName("default channel")
+        defaultChannel.setChannelIndex(0)
+        defaultChannel.setChannelNum(1)
+        val defaultSourceNames = ArrayList<String>()
+        val defaultSourceUrls = ArrayList<String>()
+        defaultSourceNames.add("default source")
+        defaultSourceUrls.add("http://default.play.url/stream")
+        defaultChannel.setChannelSourceNames(defaultSourceNames)
+        defaultChannel.setChannelUrls(defaultSourceUrls)
+        val channels = ArrayList<LiveChannelItem>()
+        channels.add(defaultChannel)
+        defaultGroup.setLiveChannels(channels)
+        liveChannelGroupList.add(defaultGroup)
+        showSuccess()
+        initLiveState()
+    }
+}
