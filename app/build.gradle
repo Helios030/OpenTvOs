@@ -1,10 +1,14 @@
+apply plugin: 'kotlin-android'
+apply plugin: 'kotlin-kapt'
+apply plugin: 'dagger.hilt.android.plugin'
 apply plugin: 'com.android.application'
 
 android {
+    namespace 'con.open.tvos'
     compileSdkVersion 33
 
     defaultConfig {
-        applicationId 'com.github.tvbox.osc'
+        applicationId 'con.open.tvos'
         targetSdkVersion 28
         versionCode 1
         versionName '1.0.0'
@@ -25,13 +29,13 @@ android {
     productFlavors {
         normal {
             dimension "mode"
-            minSdkVersion 16
+            minSdkVersion 21
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         python {
             dimension "mode"
             // 配置Python打包特有的设置（如有需要）
-            minSdkVersion 19
+            minSdkVersion 21
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro', 'proguard-python.pro'
         }
     }
@@ -66,7 +70,7 @@ android {
         variant.outputs.configureEach { output ->
             def flavorNames = variant.productFlavors.collect { it.name == "normal" ? "java" : it.name }.join('-')
             // 构建自定义文件名
-            def fileName = "TVBox_${variant.buildType.name}-${flavorNames}.apk"
+            def fileName = "OpenTvOS_${variant.buildType.name}-${flavorNames}.apk"
             outputFileName = fileName
         }
     }
@@ -76,7 +80,19 @@ android {
         targetCompatibility JavaVersion.VERSION_1_8
     }
 
-    lintOptions {
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
+    buildFeatures {
+        compose true
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion '1.5.8'
+    }
+
+    lint {
         checkReleaseBuilds false
         abortOnError false
     }
@@ -105,8 +121,35 @@ dependencies {
 
 
     implementation 'com.squareup.okhttp3:okhttp:3.12.11'
-    annotationProcessor 'androidx.room:room-compiler:2.3.0'
-    implementation 'androidx.room:room-runtime:2.3.0'
+
+    // Kotlin
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+
+    // Compose BOM
+    implementation platform('androidx.compose:compose-bom:2024.02.00')
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.ui:ui-tooling-preview'
+    implementation 'androidx.compose.material:material'
+    implementation 'androidx.compose.material3:material3'
+    implementation 'androidx.activity:activity-compose:1.8.2'
+    implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.7.0'
+    implementation 'androidx.tv:tv-foundation:1.0.0-alpha10'
+    implementation 'androidx.tv:tv-material:1.0.0-alpha10'
+
+    // Hilt
+    implementation 'com.google.dagger:hilt-android:2.50'
+    kapt 'com.google.dagger:hilt-android-compiler:2.50'
+    implementation 'androidx.hilt:hilt-navigation-compose:1.1.0'
+
+    // Room with Kotlin support
+    kapt 'androidx.room:room-compiler:2.6.1'
+    implementation 'androidx.room:room-runtime:2.6.1'
+    implementation 'androidx.room:room-ktx:2.6.1'
+
+    // Testing
+    debugImplementation 'androidx.compose.ui:ui-tooling'
+
     implementation 'androidx.multidex:multidex:2.0.1'
     implementation 'com.squareup.okio:okio:2.8.0'
     implementation 'com.github.CymChad:BaseRecyclerViewAdapterHelper:2.9.45-androidx'

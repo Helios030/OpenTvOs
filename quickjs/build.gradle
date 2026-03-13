@@ -3,10 +3,11 @@ plugins {
 }
 
 android {
+    namespace 'con.open.tvos.quickjs'
     compileSdkVersion 33
 
     defaultConfig {
-        minSdkVersion 16
+        minSdkVersion 21
         targetSdkVersion 28
         externalNativeBuild {
             cmake {
